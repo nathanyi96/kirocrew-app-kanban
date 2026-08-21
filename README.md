@@ -76,7 +76,7 @@ disable→enable cycle also works. UI-only changes reload without either.
    {
      "name": "kanban",
      "gitUrl": "https://github.com/nathanyi96/kirocrew-app-kanban",
-     "branch": "master",
+     "branch": "main",
      "resources": [],
      "lifecycle": "stable"
    }
