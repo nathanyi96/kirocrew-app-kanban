@@ -19,16 +19,19 @@ board, rebuilt on KiroCrew's own chat sessions and cron service.
   `Running` is not a drop target: a card enters it by running and leaves it by
   settling, so the board can't lie about what is actually happening.
 - **Cards settle themselves.** When the agent's turn ends the card lands in Done
-  or Failed, carrying the failure reason where there is one.
-- **Schedule any card.** Give it a cron expression and it runs unattended. The
-  schedule is backed by a real KiroCrew cron job owned by this app.
+  or Failed, carrying the failure reason where there is one — including across
+  gateway stall-recovery, where a turn survives its own recovery notice.
 - **Restart-safe.** A run orphaned by a gateway restart is reconciled on the next
   page load rather than left stuck in Running forever.
+
+Need a card to run on a schedule? Use KiroCrew's own **Schedule** tab
+(`kirocrew cron add`) with the card's prompt — this app deliberately does not
+duplicate the host's cron surface.
 
 ## Install
 
 ```bash
-kirocrew app install https://github.com/<your-org>/kirocrew-app-kanban
+kirocrew app install https://github.com/nathanyi96/kirocrew-app-kanban
 kirocrew config set agent.apps_trusted '["kanban"]'
 kirocrew app enable kanban
 kirocrew restart
@@ -72,8 +75,8 @@ disable→enable cycle also works. UI-only changes reload without either.
    ```json
    {
      "name": "kanban",
-     "gitUrl": "https://github.com/<your-org>/kirocrew-app-kanban",
-     "branch": "main",
+     "gitUrl": "https://github.com/nathanyi96/kirocrew-app-kanban",
+     "branch": "master",
      "resources": [],
      "lifecycle": "stable"
    }
@@ -117,18 +120,16 @@ mid-write cannot truncate it, and guarded by an advisory file lock so the gatewa
 and a CLI cannot interleave writes.
 
 The model and store half of the file imports nothing from `kiro_crew`, so it keeps
-working across gateway versions. The route half touches two gateway internals on
+working across gateway versions. The route half touches gateway internals on
 purpose, each with a fallback:
 
 - `request.app["state"]` to create the chat session — the `AppContext` exposes
-  scoped SDKs but not gateway state.
+  scoped SDKs but not gateway state. Turns are dispatched through
+  `state.run_background_turn`, which enforces the host's per-app turn cap and
+  unattended-approval window (calling `_run_chat` directly would bypass both).
 - `state._slots` to notice when a session's turn has ended. If that private name
   ever moves, the watcher degrades to leaving the card running for `/reconcile`
   to settle, rather than crashing.
-
-Scheduling goes through `ctx.cron`, and specifically through its **`*_async`**
-methods: the synchronous `add_job` refuses to run on the gateway event loop, so
-calling it from a route handler would raise rather than schedule anything.
 
 ### Two deliberate choices about the session
 

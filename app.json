@@ -1,19 +1,18 @@
 {
   "name": "kanban",
   "displayName": "Kanban",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "A task board where each card is a prompt an agent runs for you. Say what you want, the board writes the card, and running it opens a real chat session you can watch and read.",
-  "author": "nansong",
+  "author": "nathanyi96",
   "license": "MIT",
   "tags": ["productivity", "tasks", "kanban", "automation", "agents"],
   "highlights": [
     "One field to create a task — the board writes the title and summary for you",
     "Running a card opens a real chat session you can open, watch live, and read afterwards",
-    "Five columns with drag-and-drop; a card settles itself when its agent turn ends",
-    "Schedule any card with a cron expression and it runs unattended",
+    "Five columns with drag-and-drop, plus a tap-to-move path for touch screens",
+    "A card settles itself when its agent turn ends — including across recoveries",
     "A run orphaned by a restart is reconciled on the next page load, not left stuck"
   ],
-  "defaultEnabled": true,
   "backend": {
     "hooks": {
       "routes": "backend.routes:register_routes"
@@ -25,7 +24,6 @@
       "/api/apps/kanban/*"
     ],
     "storage": true,
-    "cron": true,
     "network": false
   },
   "ui": {
