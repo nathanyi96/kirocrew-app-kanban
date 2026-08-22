@@ -53,6 +53,13 @@ jobs:
           kirocrew config set agent.apps_trusted '["kanban"]'
           kirocrew app enable kanban
 
+      # The CLI-readiness probe always verifies an unverified binary INSIDE the
+      # strict OS sandbox (by design, not configurable), and Ubuntu 24.04
+      # runners ship AppArmor blocking unprivileged user namespaces — the probe
+      # dies with unshare EPERM and the SPA stays behind the setup wall.
+      - name: Allow unprivileged user namespaces (runner AppArmor blocks them)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Boot gateway (fake ACP backend — the wheel's own offline test rig)
         run: |
           KIRO_BIN=$(python3 -c "import kiro_crew.testing.fake_acp_backend as m; print(m.__file__)")
