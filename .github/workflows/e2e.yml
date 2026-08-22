@@ -1,0 +1,87 @@
+name: E2E
+
+# Installs the latest stable KiroCrew, installs THIS app into it the way a
+# user would, boots a real gateway, and drives the app's HTTP surface plus a
+# Playwright screenshot pass. The weekly run catches upstream KiroCrew
+# releases breaking the external-app contract even when this repo is idle.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC — post-release drift check
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      KIROCREW_HOME: /tmp/kc-e2e-home
+      KIRO_HOME: /tmp/kc-e2e-home/kiro # agent-spec isolation (same axis split as upstream's harness)
+      KIROCREW_FAKE_ACP_TEST_MODE: "1" # marks this gateway as a test rig
+      KIROCREW_SKIP_MODEL_DOWNLOAD: "1" # never pull the 610MB embedding model in CI
+      KC_PORT: "7891"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install latest stable KiroCrew (hash-pinned wheel)
+        run: |
+          FEED=$(curl -fsSL https://download.crew.kiro.dev/feed/stable/latest-cli.json)
+          V=$(printf '%s' "$FEED" | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")
+          H=$(printf '%s' "$FEED" | python3 -c "import json,sys;print(json.load(sys.stdin)['sha256'])")
+          echo "KiroCrew $V"
+          pip install "https://download.crew.kiro.dev/cli/stable/$V/kirocrew-$V-py3-none-any.whl#sha256=$H"
+          kirocrew --version
+
+      - name: Static checks (manifest schema, backend compile, UI parse)
+        run: |
+          python .github/ci/static_checks.py
+          node --check ui/index.mjs
+
+      - name: Install this app into KiroCrew (the end-user path)
+        run: |
+          kirocrew app install .
+          kirocrew config set agent.apps_trusted '["kanban"]'
+          kirocrew app enable kanban
+
+      - name: Boot gateway (fake ACP backend — the wheel's own offline test rig)
+        run: |
+          KIRO_BIN=$(python3 -c "import kiro_crew.testing.fake_acp_backend as m; print(m.__file__)")
+          chmod +x "$KIRO_BIN" || true
+          export KIROCREW_KIRO_BIN="$KIRO_BIN"
+          nohup kirocrew gateway --port "$KC_PORT" --no-open --no-crons --approval reads \
+            > /tmp/gateway.log 2>&1 &
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$KC_PORT/api/health" || true)
+            case "$code" in 200|401|403) echo "gateway up ($code) after ${i}s"; exit 0;; esac
+            sleep 1
+          done
+          echo "gateway did not come up; log tail:"; tail -50 /tmp/gateway.log; exit 1
+
+      - name: API smoke (create / move / patch / reconcile / delete / 404)
+        run: python .github/ci/smoke.py
+
+      - name: Screenshot evidence (Playwright)
+        run: |
+          pip install playwright==1.61.0
+          python -m playwright install --with-deps chromium
+          python .github/ci/screenshots.py
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence
+          path: |
+            /tmp/e2e-shots/
+            /tmp/gateway.log
+          if-no-files-found: warn

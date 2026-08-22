@@ -1,0 +1,81 @@
+"""Drive the app's real HTTP surface on the CI gateway and assert the contract.
+
+Auth uses the dashboard's cookie path: a credential minted with the same
+KIROCREW_HOME signs with the gateway's own HMAC secret, and cookie validation
+does not require the in-process link nonce, so cross-process minting works.
+"""
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+PORT = int(os.environ.get("KC_PORT", "7891"))
+BASE = f"http://127.0.0.1:{PORT}"
+
+from kiro_crew.dashboard.token_auth import generate_token  # noqa: E402
+
+COOKIE = f"mc_token_{PORT}={generate_token('ci', ttl_seconds=1800, register_nonce=False)}"
+
+
+def call(method: str, path: str, body: dict | None = None):
+    req = urllib.request.Request(BASE + path, method=method)
+    req.add_header("Cookie", COOKIE)
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, data=data) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode() or "{}")
+
+
+failures: list[str] = []
+
+
+def check(label: str, ok: bool, detail: str = "") -> None:
+    print(f"{'PASS' if ok else 'FAIL'}  {label}  {detail}")
+    if not ok:
+        failures.append(label)
+
+
+s, body = call("GET", "/api/apps/kanban/tasks")
+check("list -> 200", s == 200, f"status={s}")
+check("board shape", isinstance(body, dict) and "tasks" in body, str(body)[:100])
+
+s, body = call("POST", "/api/apps/kanban/tasks", {"prompt": "CI smoke task"})
+tid = body.get("id", "") if isinstance(body, dict) else ""
+check("create -> 201", s == 201, f"status={s}")
+check("created in todo", body.get("status") == "todo" if isinstance(body, dict) else False, f"id={tid[:8]}")
+
+s, body = call("GET", "/api/apps/kanban/tasks")
+ids = [t.get("id") for t in body.get("tasks", [])] if isinstance(body, dict) else []
+check("appears in list", tid in ids)
+
+s, _ = call("POST", f"/api/apps/kanban/tasks/{tid}/move", {"status": "backlog"})
+check("move -> 200", s == 200, f"status={s}")
+
+s, _ = call("PATCH", f"/api/apps/kanban/tasks/{tid}", {"prompt": "CI smoke task (edited)"})
+check("patch -> 200", s == 200, f"status={s}")
+
+s, body = call("POST", "/api/apps/kanban/reconcile", {})
+check("reconcile -> 200", s == 200, f"status={s} {str(body)[:60]}")
+
+s, _ = call("DELETE", f"/api/apps/kanban/tasks/{tid}")
+check("delete -> 200", s == 200, f"status={s}")
+
+s, body = call("GET", "/api/apps/kanban/tasks")
+ids = [t.get("id") for t in body.get("tasks", [])] if isinstance(body, dict) else []
+check("gone after delete", tid not in ids)
+
+s, _ = call("GET", "/api/apps/kanban/definitely-not-a-route")
+check("unknown route -> 404", s == 404, f"status={s}")
+
+print("---")
+if failures:
+    print(f"API SMOKE: {len(failures)} FAILURE(S): {failures}")
+    sys.exit(1)
+print("API SMOKE: ALL PASS")
