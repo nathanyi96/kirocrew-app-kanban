@@ -10,13 +10,14 @@
 
 ## Playwright E2E screenshots
 
-<!-- Required for every app-changing PR. Add screenshots from the successful
-     run's e2e-evidence artifact. Include the complete user journey or the
-     smallest set that proves the changed flow, plus the artifact link. Engine
-     routing changes must include Chat, Task Runner, and Autopilot evidence.
-     For multi-step journeys, add a short GIF/video overview and keep the
-     original PNG frames available in a collapsible details section. -->
+<!-- Required for every app-changing PR. Add a GIF generated from the
+     successful run's e2e-evidence artifact. The GIF must show the feature or
+     fix in this PR, or the complete end-to-end flow when there is no isolated
+     user path. Include the original PNG frames and artifact link too. Engine
+     routing changes must include Chat, Task Runner, and Autopilot evidence. -->
 
+- [ ] GIF evidence embedded: <!-- changed feature/fix or complete E2E flow -->
+- [ ] GIF was generated from the successful run's e2e-evidence frames.
 - [ ] Screenshot gallery added to this description.
 - [ ] Artifact link added: <!-- paste e2e-evidence / Actions URL -->
 

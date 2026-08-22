@@ -20,6 +20,10 @@ board, rebuilt on KiroCrew's own chat sessions and cron service.
 - **Engine-aware navigation.** The card detail shows the resolved engine for its
   latest run. Chat and Autopilot open their named Chat session; Task Runner opens
   the host's Tasks page.
+- **Explicit Task Runner enablement.** If Auto or an explicit engine choice
+  classifies a task for Task Runner while the Host does not expose Task Runner,
+  Kanban leaves the task ready to run and prompts the user to enable it before
+  retrying. It never enables the Host engine silently.
 - **Five columns, drag to move.** Backlog → To do → Running → Done → Failed.
   `Running` is not a drop target: a card enters it by running and leaves it by
   settling, so the board can't lie about what is actually happening.
