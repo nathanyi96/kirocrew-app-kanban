@@ -31,13 +31,16 @@ duplicate the host's cron surface.
 ## Install
 
 ```bash
-kirocrew app install https://github.com/nathanyi96/kirocrew-app-kanban
+git clone https://github.com/nathanyi96/kirocrew-app-kanban
+kirocrew app install ./kirocrew-app-kanban
 kirocrew config set agent.apps_trusted '["kanban"]'
 kirocrew app enable kanban
 kirocrew restart
 ```
 
-Or from a local checkout — pass the directory instead of the URL.
+`kirocrew app install` takes a **local directory** (anything containing an
+`app.json`) — clone first, then install the checkout. Installing straight from
+a git URL is the App Store's job, not the CLI's.
 
 Three things about that sequence are easy to get wrong:
 
@@ -69,8 +72,10 @@ disable→enable cycle also works. UI-only changes reload without either.
    excludes the install artifacts (`data/`, `.app_secret`, `installed.json`, …) —
    committing those causes stale-version and path bugs for everyone else.
 
-2. **Open a pull request against the KiroCrew repo** adding an entry to
-   `app-registry.json`:
+2. **Submit it to the official catalog** — the App Store is published from the
+   separate [kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)
+   repo (served at `apps.crew.kiro.dev/official-registry.json`). Follow its
+   `docs/distribution.md` to add an entry pointing at this repo:
 
    ```json
    {
