@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -35,12 +36,30 @@ if not cred:
     cred = generate_token("ci", ttl_seconds=1800, register_nonce=False)
 
 
-def seed_card(prompt: str) -> str:
+def api_call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+    req = urllib.request.Request(f"{BASE}{path}", method=method)
+    req.add_header("Cookie", f"mc_token_{PORT}={cred}")
+    data = None
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+        data = json.dumps(body).encode()
+    try:
+        with urllib.request.urlopen(req, data=data) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode() or "{}")
+
+
+def create_card(prompt: str, engine: str = "auto") -> dict:
     req = urllib.request.Request(f"{BASE}/api/apps/kanban/tasks", method="POST")
     req.add_header("Cookie", f"mc_token_{PORT}={cred}")
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, data=json.dumps({"prompt": prompt}).encode()) as resp:
-        return json.loads(resp.read().decode())["id"]
+    with urllib.request.urlopen(req, data=json.dumps({"prompt": prompt, "engine": engine}).encode()) as resp:
+        return json.loads(resp.read().decode())
+
+
+def seed_card(prompt: str) -> str:
+    return create_card(prompt)["id"]
 
 
 def get_task(task_id: str) -> dict:
@@ -118,6 +137,9 @@ with sync_playwright() as p:
 
     prompt = "Create an E2E journey proof task and report the result."
     page.locator("#kanban-new-prompt").fill(prompt)
+    # Keep this evidence path deterministic: it proves the Chat route while
+    # the separate engine contract smoke covers selecting Task Runner.
+    page.locator("#kanban-new-engine").select_option("chat")
     with page.expect_response(
         lambda response: response.request.method == "POST"
         and response.url.endswith("/api/apps/kanban/tasks")
@@ -138,6 +160,7 @@ with sync_playwright() as p:
     task_card.click()
     detail = page.get_by_role("dialog", name="Task detail")
     expect(detail).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Chat", exact=True)).to_be_visible(timeout=15000)
     page.screenshot(path=str(OUT / "05-task-detail-before-run.png"), full_page=True)
 
     # Step 4: run from the detail view. This creates a real named dashboard
@@ -197,6 +220,133 @@ with sync_playwright() as p:
     expect(page.locator("body")).to_contain_text(prompt, timeout=15000)
     page.screenshot(path=str(OUT / "10-chat-transcript.png"), full_page=True)
 
+    def open_kanban() -> None:
+        page.goto(f"{BASE}/apps/kanban", wait_until="domcontentloaded")
+        page.wait_for_url("**/apps/kanban", timeout=15000)
+        expect(page.get_by_text("Kanban", exact=True).first).to_be_visible(timeout=15000)
+
+    def create_ui_task(task_prompt: str, engine: str) -> dict:
+        open_kanban()
+        page.get_by_role("button", name="New task", exact=True).click()
+        expect(page.locator("#kanban-new-prompt")).to_be_visible(timeout=15000)
+        page.locator("#kanban-new-prompt").fill(task_prompt)
+        page.locator("#kanban-new-engine").select_option(engine)
+        with page.expect_response(
+            lambda response: response.request.method == "POST"
+            and response.url.endswith("/api/apps/kanban/tasks")
+        ) as response_info:
+            page.get_by_role("button", name="Create task", exact=True).click()
+        return response_info.value.json()
+
+    # Step 8: exercise the real Task Runner engine. This is deliberately an
+    # explicit selection so the screenshot proves the engine selector and the
+    # resolved engine badge, rather than only testing Auto's heuristic.
+    task_runner_prompt = "Task Runner E2E: complete multiple steps and report the result."
+    task_runner_created = create_ui_task(task_runner_prompt, "task_runner")
+    task_runner_id = task_runner_created["id"]
+    task_runner_card = page.locator("[role=\"button\"]").filter(has_text=task_runner_prompt).first
+    expect(task_runner_card).to_be_visible(timeout=15000)
+    task_runner_card.click()
+    task_runner_detail = page.get_by_role("dialog", name="Task detail")
+    expect(task_runner_detail.get_by_text("Task Runner", exact=True)).to_be_visible(timeout=15000)
+    page.screenshot(path=str(OUT / "11-task-runner-detail.png"), full_page=True)
+
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and response.url.endswith(f"/api/apps/kanban/tasks/{task_runner_id}/run")
+    ) as task_runner_run_response:
+        task_runner_detail.get_by_role("button", name="Run", exact=True).click()
+    assert task_runner_run_response.value.status == 202, (
+        f"Task Runner run returned {task_runner_run_response.value.status}"
+    )
+    task_runner_started = wait_for_task(
+        task_runner_id,
+        lambda task: bool(task.get("executions"))
+        and task["executions"][-1].get("runner_id")
+        and task["executions"][-1].get("engine") == "task_runner",
+        timeout=30,
+    )
+    task_runner_run_id = task_runner_started["executions"][-1]["runner_id"]
+    open_kanban()
+    task_runner_card = page.locator("[role=\"button\"]").filter(has_text=task_runner_prompt).first
+    task_runner_card.click()
+    task_runner_detail = page.get_by_role("dialog", name="Task detail")
+    expect(task_runner_detail.get_by_role("button", name="Open Task Runner")).to_be_visible(
+        timeout=15000
+    )
+    page.screenshot(path=str(OUT / "12-task-runner-running.png"), full_page=True)
+    task_runner_detail.get_by_role("button", name="Open Task Runner").click()
+    page.wait_for_url("**/projects*", timeout=15000)
+    expect(page.locator("body")).to_contain_text("Task Runner", timeout=15000)
+    page.screenshot(path=str(OUT / "13-task-runner-host.png"), full_page=True)
+    cancel_status, _cancel_body = api_call(
+        "POST", "/api/taskrunner/cancel", {"task_id": task_runner_run_id}
+    )
+    assert cancel_status == 200, f"Task Runner cancel returned {cancel_status}"
+    wait_for_task(
+        task_runner_id,
+        lambda task: bool(task.get("executions"))
+        and task["executions"][-1].get("result") is not None,
+        timeout=30,
+    )
+
+    # Step 9: exercise Autopilot. Autopilot is part of the Host Chat surface;
+    # the Kanban backend creates the session in orchestrator mode, so the
+    # destination is still /chat?sid=... but visibly carries the plan/approval UI.
+    autopilot_prompt = "Autopilot E2E: plan a concise two-step review and show the approval plan."
+    autopilot_created = create_ui_task(autopilot_prompt, "autopilot")
+    autopilot_id = autopilot_created["id"]
+    autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
+    expect(autopilot_card).to_be_visible(timeout=15000)
+    autopilot_card.click()
+    autopilot_detail = page.get_by_role("dialog", name="Task detail")
+    expect(autopilot_detail.get_by_text("Autopilot", exact=True).first).to_be_visible(timeout=15000)
+    page.screenshot(path=str(OUT / "14-autopilot-detail.png"), full_page=True)
+
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and response.url.endswith(f"/api/apps/kanban/tasks/{autopilot_id}/run")
+    ) as autopilot_run_response:
+        autopilot_detail.get_by_role("button", name="Run", exact=True).click()
+    assert autopilot_run_response.value.status == 202, (
+        f"Autopilot run returned {autopilot_run_response.value.status}"
+    )
+    autopilot_started = wait_for_task(
+        autopilot_id,
+        lambda task: bool(task.get("executions"))
+        and task["executions"][-1].get("session_key")
+        and task["executions"][-1].get("engine") == "autopilot",
+        timeout=30,
+    )
+    open_kanban()
+    autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
+    autopilot_card.click()
+    autopilot_detail = page.get_by_role("dialog", name="Task detail")
+    expect(autopilot_detail.get_by_role("button", name="Open agent session")).to_be_visible(
+        timeout=15000
+    )
+    page.screenshot(path=str(OUT / "15-autopilot-running.png"), full_page=True)
+    autopilot_detail.get_by_role("button", name="Open agent session").click()
+    page.wait_for_url("**/chat?sid=*", timeout=15000)
+    expect(page.get_by_role("textbox", name="Message input")).to_be_visible(timeout=15000)
+    expect(page.locator("body")).to_contain_text("Autopilot", timeout=15000)
+    expect(page.locator("body")).to_contain_text(autopilot_prompt, timeout=15000)
+    page.screenshot(path=str(OUT / "16-autopilot-session.png"), full_page=True)
+
+    open_kanban()
+    autopilot_finished = wait_for_task(
+        autopilot_id,
+        lambda task: bool(task.get("executions"))
+        and task["executions"][-1].get("result") is not None,
+        timeout=30,
+    )
+    assert autopilot_finished["executions"][-1].get("engine") == "autopilot"
+    autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
+    autopilot_card.click()
+    autopilot_detail = page.get_by_role("dialog", name="Task detail")
+    expect(autopilot_detail.get_by_text("Autopilot", exact=True).first).to_be_visible(timeout=15000)
+    page.screenshot(path=str(OUT / "17-autopilot-completed-detail.png"), full_page=True)
+
     browser.close()
 
 expected_shots = [f"{index:02d}-{name}.png" for index, name in enumerate([
@@ -210,6 +360,13 @@ expected_shots = [f"{index:02d}-{name}.png" for index, name in enumerate([
     "task-done",
     "completed-task-detail",
     "chat-transcript",
+    "task-runner-detail",
+    "task-runner-running",
+    "task-runner-host",
+    "autopilot-detail",
+    "autopilot-running",
+    "autopilot-session",
+    "autopilot-completed-detail",
 ], start=1)]
 shots = sorted(f.name for f in OUT.glob("*.png"))
 missing = sorted(set(expected_shots) - set(shots))

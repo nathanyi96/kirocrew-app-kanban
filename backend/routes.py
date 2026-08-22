@@ -9,12 +9,12 @@ Everything lives in this one module because the app loader imports hook modules
 by file path in an isolated namespace — a relative import between app modules
 has no package to resolve against.
 
-Running a card creates a REAL dashboard chat session (a named chat slot) rather
-than a headless subagent, because the point is that the user can open it. Two
-consequences are deliberate:
+Running a card starts one of the Host's user-visible engines. Chat and Autopilot
+use a REAL dashboard chat session (a named chat slot), while Task Runner uses the
+Host task-run registry. Two consequences are deliberate:
 
-* The slot is visible in the Sessions list and reachable at
-  ``/chat?sid=<slot key>``. Hiding it would defeat the feature.
+* Chat/Autopilot slots are visible in the Sessions list and reachable at
+  ``/chat?sid=<slot key>``. Hiding them would defeat the feature.
 * No tool trust is granted to the slot. Approval prompts render in the chat UI,
   which is exactly where this session lives, so the user approves there.
 
@@ -92,6 +92,12 @@ class BoardUnreadableError(RuntimeError):
 
 TASK_STATUSES = ("backlog", "todo", "running", "done", "failed")
 
+# ``auto`` is the creation-time preference.  Each execution records the
+# resolved engine so an old card can still be opened at the right destination
+# after the board's default-routing heuristic changes.
+TASK_ENGINES = ("auto", "chat", "task_runner", "autopilot")
+EXECUTION_ENGINES = ("chat", "task_runner", "autopilot")
+
 #: The lanes a REQUEST may put a card in. ``running`` is deliberately absent:
 #: it means "an agent turn is live for this card", which only the run path can
 #: make true, and only a watcher settles. A request that could set it directly
@@ -118,6 +124,8 @@ class ExecutionRecord:
     session_key: str | None = None
     result: str | None = None  # one of EXECUTION_RESULTS; None while unsettled
     error: str | None = None
+    engine: str = "chat"
+    runner_id: str | None = None
 
 
 @dataclass
@@ -139,6 +147,10 @@ class TaskRecord:
     # prompt, so this flag is what lets the board say the name is still coming
     # rather than presenting a truncated prompt as the final title.
     refining: bool = False
+    # The user's requested routing preference. ``active_engine`` is the actual
+    # engine selected for the latest execution, if the card has been run.
+    engine: str = "auto"
+    active_engine: str | None = None
 
 
 # ── Pure State Transitions ──
@@ -152,6 +164,7 @@ def create_task(
     tags: list[str] | None = None,
     priority: str = "medium",
     refining: bool = False,
+    engine: str = "auto",
 ) -> TaskRecord:
     """Create a new task with a generated id and timestamps."""
     now = time.time()
@@ -166,6 +179,7 @@ def create_task(
         tags=tags or [],
         priority=priority if priority in ("low", "medium", "high") else "medium",
         refining=refining,
+        engine=engine if engine in TASK_ENGINES else "auto",
     )
 
 
@@ -185,13 +199,17 @@ def move_task(task: TaskRecord, new_status: str) -> TaskRecord:
         tags=task.tags,
         priority=task.priority,
         refining=task.refining,
+        engine=task.engine,
+        active_engine=task.active_engine,
     )
 
 
-def start_execution(task: TaskRecord) -> tuple[TaskRecord, ExecutionRecord]:
+def start_execution(task: TaskRecord, engine: str) -> tuple[TaskRecord, ExecutionRecord]:
     """Begin a new execution. Returns (updated task, new execution record)."""
+    if engine not in EXECUTION_ENGINES:
+        raise ValueError(f"Invalid execution engine: {engine!r}")
     now = time.time()
-    execution = ExecutionRecord(id=str(uuid.uuid4()), started_at=now)
+    execution = ExecutionRecord(id=str(uuid.uuid4()), started_at=now, engine=engine)
     new_task = TaskRecord(
         id=task.id,
         title=task.title,
@@ -204,6 +222,8 @@ def start_execution(task: TaskRecord) -> tuple[TaskRecord, ExecutionRecord]:
         tags=task.tags,
         priority=task.priority,
         refining=task.refining,
+        engine=task.engine,
+        active_engine=engine,
     )
     return new_task, execution
 
@@ -246,6 +266,8 @@ def settle_execution(
                     session_key=ex.session_key,
                     result=outcome,
                     error=error,
+                    engine=ex.engine,
+                    runner_id=ex.runner_id,
                 )
             )
         else:
@@ -263,6 +285,8 @@ def settle_execution(
         tags=task.tags,
         priority=task.priority,
         refining=task.refining,
+        engine=task.engine,
+        active_engine=task.active_engine,
     )
 
 
@@ -279,6 +303,8 @@ def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) ->
                     session_key=session_key,
                     result=ex.result,
                     error=ex.error,
+                    engine=ex.engine,
+                    runner_id=ex.runner_id,
                 )
             )
         else:
@@ -296,6 +322,45 @@ def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) ->
         tags=task.tags,
         priority=task.priority,
         refining=task.refining,
+        engine=task.engine,
+        active_engine=task.active_engine,
+    )
+
+
+def attach_runner_id(task: TaskRecord, execution_id: str, runner_id: str) -> TaskRecord:
+    """Record the Task Runner run id for an execution."""
+    new_executions = []
+    for ex in task.executions:
+        if ex.id == execution_id:
+            new_executions.append(
+                ExecutionRecord(
+                    id=ex.id,
+                    started_at=ex.started_at,
+                    ended_at=ex.ended_at,
+                    session_key=ex.session_key,
+                    result=ex.result,
+                    error=ex.error,
+                    engine=ex.engine,
+                    runner_id=runner_id,
+                )
+            )
+        else:
+            new_executions.append(ex)
+
+    return TaskRecord(
+        id=task.id,
+        title=task.title,
+        description=task.description,
+        prompt=task.prompt,
+        status=task.status,
+        created_at=task.created_at,
+        updated_at=time.time(),
+        executions=new_executions,
+        tags=task.tags,
+        priority=task.priority,
+        refining=task.refining,
+        engine=task.engine,
+        active_engine=task.active_engine,
     )
 
 
@@ -351,6 +416,8 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             result = ex_raw.get("result")
             error = ex_raw.get("error")
             session_key = ex_raw.get("session_key")
+            execution_engine = ex_raw.get("engine", "chat")
+            runner_id = ex_raw.get("runner_id")
             if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
                 raise BoardUnreadableError("board.json has an execution with a non-numeric start")
             if ended_at is not None and (
@@ -363,6 +430,10 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                 raise BoardUnreadableError("board.json has an execution with a non-string error")
             if session_key is not None and not isinstance(session_key, str):
                 raise BoardUnreadableError("board.json has an execution with a non-string session")
+            if execution_engine not in EXECUTION_ENGINES:
+                raise BoardUnreadableError("board.json has an execution with an unknown engine")
+            if runner_id is not None and not isinstance(runner_id, str):
+                raise BoardUnreadableError("board.json has an execution with a non-string runner id")
             executions.append(
                 ExecutionRecord(
                     id=ex_id,
@@ -371,12 +442,21 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                     session_key=session_key,
                     result=result,
                     error=error,
+                    engine=execution_engine,
+                    runner_id=runner_id,
                 )
             )
 
         tags = raw.get("tags", [])
         if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
             raise BoardUnreadableError("board.json has a tags value that is not a list of strings")
+
+        engine = raw.get("engine", "auto")
+        active_engine = raw.get("active_engine")
+        if engine not in TASK_ENGINES:
+            raise BoardUnreadableError("board.json has a task with an unknown engine")
+        if active_engine is not None and active_engine not in EXECUTION_ENGINES:
+            raise BoardUnreadableError("board.json has a task with an unknown active engine")
 
         return TaskRecord(
             id=task_id,
@@ -397,6 +477,8 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             # by an older build has no such key, and a non-bool value is not
             # permission to render a card as perpetually refining.
             refining=raw.get("refining") is True,
+            engine=engine,
+            active_engine=active_engine,
         )
     except BoardUnreadableError:
         logger.error("kanban: refusing to read board.json: task %s is invalid", task_id)
@@ -698,6 +780,17 @@ def _tags_field(body: dict[str, Any], key: str = "tags") -> list[str]:
     return value
 
 
+def _engine_field(body: dict[str, Any], key: str = "engine", *, default: str = "auto") -> str:
+    """Read an engine preference from an API body."""
+    value = body.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, str) or value not in TASK_ENGINES:
+        allowed = ", ".join(TASK_ENGINES)
+        raise _BadRequest(f"{key} must be one of: {allowed}", f"{key}_invalid")
+    return value
+
+
 # ── Naming (AI-generated title + description) ──
 
 # The request is delimited DATA, never an instruction: a prompt that says "ignore
@@ -841,6 +934,7 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         prompt = _str_field(body, "prompt")
         description = _str_field(body, "description")
         tags = _tags_field(body)
+        engine = _engine_field(body)
     except _BadRequest as bad:
         return bad.response()
 
@@ -869,6 +963,7 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         tags=tags,
         priority=body.get("priority", "medium"),
         refining=name_in_background,
+        engine=engine,
     )
     await asyncio.to_thread(store.add_task, task)
     if name_in_background:
@@ -930,6 +1025,8 @@ async def _name_task_in_background(
             tags=task.tags,
             priority=task.priority,
             refining=False,
+            engine=task.engine,
+            active_engine=task.active_engine,
         )
 
     if cancelled is not None:
@@ -979,6 +1076,8 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
                 _str_field(body, _key, default="")
         if "tags" in body:
             _tags_field(body)
+        if "engine" in body:
+            _engine_field(body)
     except _BadRequest as bad:
         return bad.response()
 
@@ -999,6 +1098,7 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
         prompt = body.get("prompt", task.prompt)
         tags = body.get("tags", task.tags)
         priority = body.get("priority", task.priority)
+        engine = body.get("engine", task.engine)
 
         return TaskRecord(
             id=task.id,
@@ -1015,6 +1115,8 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
             # the background naming's claim on the title: whatever the namer
             # returns afterwards must not overwrite what the user just typed.
             refining=False if "title" in body or "description" in body else task.refining,
+            engine=engine if engine in TASK_ENGINES else task.engine,
+            active_engine=task.active_engine,
         )
 
     result = await asyncio.to_thread(store.update_task, task_id, updater)
@@ -1100,6 +1202,100 @@ async def api_kanban_tasks_move(request: web.Request, ctx: Any) -> web.Response:
     return web.json_response(asdict(result))
 
 
+# ── Engine routing ──
+
+
+def _resolve_engine(preference: str, prompt: str) -> str:
+    """Resolve ``auto`` into a concrete engine.
+
+    Auto intentionally stays conservative: a short, single-intent request is a
+    normal Chat turn; explicit multi-step language or a longer structured
+    request goes to Task Runner. Autopilot remains an explicit choice because
+    it pauses for a human plan approval in its Chat session.
+    """
+    if preference in EXECUTION_ENGINES:
+        return preference
+    normalized = prompt.strip().lower()
+    complex_markers = (
+        "multi-step", "multiple steps", "step by step", "workflow", "pipeline",
+        "implement", "build", "refactor", "migrate", "research", "compare",
+        "deploy", "integration", "end to end", "e2e", "plan and", "then",
+    )
+    has_list = any(line.lstrip().startswith(('-', '*')) for line in prompt.splitlines())
+    numbered_steps = sum(1 for line in prompt.splitlines() if line.lstrip()[:2].rstrip('.').isdigit())
+    if len(prompt) > 280 or has_list or numbered_steps >= 2 or any(marker in normalized for marker in complex_markers):
+        return "task_runner"
+    return "chat"
+
+
+def _task_runner_spec(task: TaskRecord, prompt: str) -> str:
+    """Wrap a Kanban prompt in the inline spec accepted by Task Runner."""
+    return (
+        f"# {task.title}\n\n"
+        "## Goal\n"
+        f"{prompt.strip() or task.title}\n\n"
+        "## Steps\n"
+        "1. Work through the requested goal and any required sub-tasks.\n"
+        "2. Verify the result and summarize what was completed.\n"
+    )
+
+
+async def _start_task_runner(
+    state: Any,
+    store: KanbanStore,
+    task: TaskRecord,
+    execution_id: str,
+    prompt_text: str,
+) -> str:
+    """Start a real Host Task Runner execution for a Kanban card."""
+    runner = getattr(state, "task_runner", None)
+    if runner is None or not hasattr(runner, "start_background"):
+        raise RuntimeError("Task Runner is not available on this gateway")
+    work_dir = Path(getattr(runner, "_work_dir", Path.cwd()))
+    spec_path = work_dir / f"KANBAN_{uuid.uuid4().hex[:12]}.md"
+    atomic_write(spec_path, _task_runner_spec(task, prompt_text))
+    runner_id = await runner.start_background(
+        spec_path,
+        name=task.title,
+        source="dashboard",
+        auto_approve=False,
+    )
+    await asyncio.to_thread(
+        store.update_task,
+        task.id,
+        lambda cur: attach_runner_id(cur, execution_id, runner_id),
+    )
+    asyncio.create_task(
+        _watch_task_runner_execution(state, store, task.id, execution_id, runner_id)
+    )
+    return runner_id
+
+
+async def _watch_task_runner_execution(
+    state: Any,
+    store: KanbanStore,
+    task_id: str,
+    execution_id: str,
+    runner_id: str,
+) -> None:
+    """Settle a Kanban execution from the Host Task Runner run registry."""
+    runner = getattr(state, "task_runner", None)
+    deadline = time.monotonic() + _WATCH_TIMEOUT_SECS
+    while time.monotonic() < deadline:
+        run = getattr(runner, "_runs", {}).get(runner_id) if runner is not None else None
+        if run is None:
+            await _settle_task(store, task_id, execution_id, "failed", "Task Runner run disappeared")
+            return
+        status = str(getattr(run, "status", "")).lower()
+        if status in ("completed", "failed", "cancelled"):
+            outcome = "succeeded" if status == "completed" else status
+            error = getattr(run, "error", "") or None
+            await _settle_task(store, task_id, execution_id, outcome, str(error)[:500] if error else None)
+            return
+        await asyncio.sleep(2)
+    await _settle_task(store, task_id, execution_id, "failed", "Task Runner execution timed out (30m)")
+
+
 # ── Run Task (trigger execution) ──
 
 
@@ -1107,8 +1303,8 @@ async def api_kanban_tasks_move(request: web.Request, ctx: Any) -> web.Response:
 async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
     """POST /tasks/{id}/run — trigger task execution.
 
-    Creates a new chat session and injects the task prompt. Returns the
-    execution id and session key so the frontend can link to the transcript.
+    Resolves the requested engine, starts it, and returns the target id so the
+    frontend can route the user to the corresponding Host surface.
     """
     store = _get_store(ctx)
     task_id = request.match_info["id"]
@@ -1133,9 +1329,12 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
         if current.status == "running":
             claim["conflict"] = True
             return current
-        claimed, execution = start_execution(current)
+        prompt = current.prompt.strip() or current.title
+        engine = _resolve_engine(current.engine, prompt)
+        claimed, execution = start_execution(current, engine)
         claim["task"] = claimed
         claim["execution"] = execution
+        claim["engine"] = engine
         return claimed
 
     result = await asyncio.to_thread(store.update_task, task_id, claim_run)
@@ -1148,24 +1347,30 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
 
     new_task: TaskRecord = claim["task"]
     execution = claim["execution"]
+    engine = claim["engine"]
     prompt_text = new_task.prompt.strip() or new_task.title
 
-    # Create a real chat session and inject the task prompt.
     session_key: str | None = None
+    runner_id: str | None = None
     try:
-        session_key = await _create_kanban_session(
-            state, store, new_task, execution.id, prompt_text
-        )
-        if session_key:
-            # Attach the session key to the execution record. Applied to the
-            # CURRENT record rather than to the snapshot above, so a settle that
-            # landed while the session was being created is not rolled back.
-            _sk = session_key
-            await asyncio.to_thread(
-                store.update_task,
-                task_id,
-                lambda cur: attach_session_key(cur, execution.id, _sk),
+        if engine == "task_runner":
+            runner_id = await _start_task_runner(
+                state, store, new_task, execution.id, prompt_text
             )
+        else:
+            session_key = await _create_kanban_session(
+                state, store, new_task, execution.id, prompt_text, engine=engine
+            )
+            if session_key:
+                # Attach to the CURRENT record rather than the snapshot above,
+                # so a settle that landed while the session was being created is
+                # not rolled back.
+                _sk = session_key
+                await asyncio.to_thread(
+                    store.update_task,
+                    task_id,
+                    lambda cur: attach_session_key(cur, execution.id, _sk),
+                )
     except Exception as exc:
         logger.warning("kanban: failed to create execution session: %s", exc)
         # Bind the message before the lambda: `exc` is unbound once the except
@@ -1184,7 +1389,9 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
     return web.json_response(
         {
             "execution_id": execution.id,
+            "engine": engine,
             "session_key": session_key,
+            "runner_id": runner_id,
             "status": "running",
         },
         status=202,
@@ -1235,6 +1442,7 @@ async def _create_kanban_session(
     task: TaskRecord,
     execution_id: str,
     prompt_text: str,
+    engine: str = "chat",
 ) -> str | None:
     """Create a real dashboard chat session and inject the task prompt.
 
@@ -1257,7 +1465,13 @@ async def _create_kanban_session(
     # than a human's. An unowned slot would opt every kanban turn out of both, so
     # the cap's counters would report the truth about a smaller number of turns
     # than are actually on the runtime.
-    slot = state.get_or_create_slot(name=f"kanban-{task.id}", app=APP_NAME)
+    mode = "orchestrator" if engine == "autopilot" else ""
+    slot = state.get_or_create_slot(name=f"kanban-{task.id}", mode=mode, app=APP_NAME)
+    # Re-runs reuse the stable conversation slot. Update its mode before the
+    # next prompt so changing a card from Chat to Autopilot (or back) changes
+    # the Host routing behavior as well as the Kanban metadata.
+    if getattr(slot, "mode", "") != mode:
+        slot.mode = mode
     slot.title = task.title[:80] or "Kanban task"
 
     # Refuse rather than queue behind a turn that is already running. The
@@ -1559,14 +1773,15 @@ async def _settle_task(
 
 @_require_enabled
 async def api_kanban_tasks_reconcile(request: web.Request, ctx: Any) -> web.Response:
-    """POST /reconcile — reconcile running tasks with slot state.
+    """POST /reconcile — reconcile running tasks with Host engine state.
 
-    Checks all tasks stuck in 'running' status and settles them if their chat
-    slot has finished its turn. Called by the frontend on page load.
+    Checks all tasks stuck in 'running' status and settles them if their Chat
+    slot or Task Runner run has finished. Called by the frontend on page load.
     """
     store = _get_store(ctx)
     state = _get_state(request)
     slots = getattr(state, "_slots", {}) or {}
+    runner = getattr(state, "task_runner", None)
 
     tasks = await asyncio.to_thread(store.load)
     running_tasks = [t for t in tasks if t.status == "running"]
@@ -1585,6 +1800,39 @@ async def api_kanban_tasks_reconcile(request: web.Request, ctx: Any) -> web.Resp
                 store.update_task,
                 task.id,
                 lambda t, e=exec_id, o=outcome: settle_execution(t, e, o),
+            )
+            reconciled += 1
+            continue
+
+        if last_exec.engine == "task_runner":
+            run = (
+                getattr(runner, "_runs", {}).get(last_exec.runner_id)
+                if runner is not None and last_exec.runner_id
+                else None
+            )
+            if run is None:
+                if time.time() - last_exec.started_at < _SESSION_ATTACH_GRACE_SECS:
+                    continue
+                await asyncio.to_thread(
+                    store.update_task,
+                    task.id,
+                    lambda t, e=exec_id: settle_execution(
+                        t, e, "cancelled", "Task Runner run is no longer available"
+                    ),
+                )
+                reconciled += 1
+                continue
+            runner_status = str(getattr(run, "status", "")).lower()
+            if runner_status not in ("completed", "failed", "cancelled"):
+                continue
+            runner_outcome = "succeeded" if runner_status == "completed" else runner_status
+            runner_error = getattr(run, "error", "") or None
+            await asyncio.to_thread(
+                store.update_task,
+                task.id,
+                lambda t, e=exec_id, o=runner_outcome, x=runner_error: settle_execution(
+                    t, e, o, str(x)[:500] if x else None
+                ),
             )
             reconciled += 1
             continue

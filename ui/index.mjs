@@ -62,6 +62,34 @@ const RESULT_LABELS = {
   cancelled: 'Cancelled',
 }
 
+const ENGINE_OPTIONS = [
+  { id: 'auto', label: 'Auto', help: 'Chat for simple prompts; Task Runner for multi-step work' },
+  { id: 'chat', label: 'Chat', help: 'One live Chat session' },
+  { id: 'task_runner', label: 'Task Runner', help: 'Multi-step execution with progress' },
+  { id: 'autopilot', label: 'Autopilot', help: 'Plan first, then approve in a Chat session' },
+]
+
+const ENGINE_LABELS = Object.fromEntries(ENGINE_OPTIONS.map(engine => [engine.id, engine.label]))
+
+function taskEngine(task) {
+  const latest = task.executions && task.executions.length
+    ? task.executions[task.executions.length - 1]
+    : null
+  return latest?.engine || task.active_engine || task.engine || 'auto'
+}
+
+function EngineBadge({ engine }) {
+  const label = ENGINE_LABELS[engine] || 'Auto'
+  return _jsx('span', {
+    style: {
+      display: 'inline-flex', alignItems: 'center', borderRadius: 999,
+      padding: '2px 7px', fontSize: 10, fontWeight: 600, color: T.accent,
+      background: T.accentSoft, border: '1px solid rgba(124,58,237,0.25)',
+    },
+    children: label,
+  })
+}
+
 // ── API helpers ──
 
 /**
@@ -133,9 +161,10 @@ function IconButton({ label, onClick, children, style }) {
 
 // ── Task Card ──
 
-function TaskCard({ task, onClick, onRun, onOpenSession, onMoveMenu, runBusy }) {
+function TaskCard({ task, onClick, onRun, onOpenEngine, onMoveMenu, runBusy }) {
   const latest = task.executions.length ? task.executions[task.executions.length - 1] : null
-  const hasSession = Boolean(latest && latest.session_key)
+  const engine = taskEngine(task)
+  const hasTarget = Boolean(latest && (latest.session_key || latest.runner_id))
   const failed = task.status === 'failed'
   const running = task.status === 'running'
   const subtitle = task.description || task.prompt
@@ -204,6 +233,10 @@ function TaskCard({ task, onClick, onRun, onOpenSession, onMoveMenu, runBusy }) 
         },
         children: subtitle,
       }),
+      _jsxs('div', {
+        style: { marginTop: 7, display: 'flex', alignItems: 'center', gap: 6 },
+        children: [_jsx(EngineBadge, { engine }), _jsx('span', { style: { fontSize: 10, color: T.muted }, children: engine === 'auto' ? 'will route on run' : 'current engine' })],
+      }),
       // Failure reason is the most useful thing a failed card can show.
       failed && latest && latest.error && _jsxs('p', {
         style: {
@@ -242,15 +275,15 @@ function TaskCard({ task, onClick, onRun, onOpenSession, onMoveMenu, runBusy }) 
           display: 'flex', alignItems: 'center', gap: 10,
         },
         children: [
-          hasSession && _jsxs('button', {
+          hasTarget && _jsxs('button', {
             type: 'button',
-            onClick: e => { e.stopPropagation(); onOpenSession(latest.session_key) },
-            title: 'Open the agent session',
+            onClick: e => { e.stopPropagation(); onOpenEngine(task, latest) },
+            title: `Open ${ENGINE_LABELS[engine] || 'engine'}`,
             style: {
               background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: T.accent,
             },
-            children: [_jsx(MessageSquare, { size: 11 }), running ? 'Watch live' : 'View session'],
+            children: [engine === 'task_runner' ? _jsx(Play, { size: 11 }) : _jsx(MessageSquare, { size: 11 }), engine === 'task_runner' ? 'Open Task Runner' : running ? 'Watch live' : 'View session'],
           }),
           !running && _jsx('button', {
             type: 'button',
@@ -389,8 +422,9 @@ function MoveMenu({ task, onMove, onClose }) {
 
 // ── Create form ──
 
-function CreateTaskForm({ initialPrompt, onSubmit, onCancel }) {
+function CreateTaskForm({ initialPrompt, initialEngine, onSubmit, onCancel }) {
   const [prompt, setPrompt] = useState(initialPrompt || '')
+  const [engine, setEngine] = useState(initialEngine || 'auto')
   const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   // Escape and the close button ASK to close; a typed prompt is what decides.
@@ -410,7 +444,7 @@ function CreateTaskForm({ initialPrompt, onSubmit, onCancel }) {
   const submit = e => {
     e.preventDefault()
     if (!prompt.trim()) return
-    onSubmit(prompt.trim())
+    onSubmit({ prompt: prompt.trim(), engine })
   }
 
   const pill = {
@@ -463,7 +497,23 @@ function CreateTaskForm({ initialPrompt, onSubmit, onCancel }) {
         }),
         _jsx('p', {
           style: { margin: 0, fontSize: 11, color: T.muted },
-          children: 'The card gets its title and summary automatically. Running it opens a real chat session you can watch.',
+          children: 'Choose an engine, or leave Auto to route simple prompts to Chat and multi-step work to Task Runner.',
+        }),
+        _jsxs('div', {
+          children: [
+            _jsx('label', { htmlFor: 'kanban-new-engine', style: { display: 'block', fontSize: 12, color: T.muted, marginBottom: 8 }, children: 'Back this task with' }),
+            _jsx('select', {
+              id: 'kanban-new-engine',
+              'aria-label': 'Engine',
+              value: engine,
+              onChange: e => setEngine(e.target.value),
+              style: {
+                width: '100%', boxSizing: 'border-box', background: T.bg, color: T.strong,
+                border: `1px solid ${T.border}`, borderRadius: 8, padding: '9px 12px', fontSize: 13,
+              },
+              children: ENGINE_OPTIONS.map(option => _jsx('option', { value: option.id, children: `${option.label} — ${option.help}` }, option.id)),
+            }),
+          ],
         }),
         _jsxs('div', {
           style: { display: 'flex', gap: 8 },
@@ -515,7 +565,7 @@ function CreateTaskForm({ initialPrompt, onSubmit, onCancel }) {
 
 // ── Task detail modal ──
 
-function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenSession }) {
+function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEngine }) {
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [prompt, setPrompt] = useState(task.prompt)
@@ -524,6 +574,8 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenSe
 
   const isDirty = title !== task.title || description !== task.description || prompt !== task.prompt
   const latest = task.executions.length ? task.executions[task.executions.length - 1] : null
+  const currentEngine = taskEngine(task)
+  const engineHelp = ENGINE_OPTIONS.find(option => option.id === currentEngine)?.help || 'Engine selected for this task'
   const running = task.status === 'running'
   const col = COLUMNS.find(c => c.id === task.status)
 
@@ -648,25 +700,35 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenSe
                 _jsxs('div', {
                   style: { display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 },
                   children: [
-                    latest && latest.session_key && _jsxs('div', {
+                    _jsxs('div', {
                       children: [
-                        _jsx('div', { style: { ...label, marginBottom: 8 }, children: 'Session' }),
-                        _jsxs('button', {
+                        _jsx('div', { style: { ...label, marginBottom: 8 }, children: 'Engine' }),
+                        _jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8 }, children: [
+                          _jsx(EngineBadge, { engine: currentEngine }),
+                          _jsx('span', { style: { fontSize: 11, color: T.muted }, children: engineHelp }),
+                        ] }),
+                        _jsx('p', {
+                          style: { margin: '6px 0 0', fontSize: 10, color: T.muted },
+                          children: currentEngine === 'task_runner'
+                            ? 'Navigation opens the Host Task Runner page.'
+                            : currentEngine === 'autopilot'
+                              ? 'Navigation opens this task’s Autopilot plan/approval Chat session.'
+                              : currentEngine === 'chat'
+                                ? 'Navigation opens this task’s Chat session.'
+                                : 'Auto chooses Chat or Task Runner when you run the task.',
+                        }),
+                        latest && (latest.session_key || latest.runner_id) && _jsxs('button', {
                           type: 'button',
-                          onClick: () => onOpenSession(latest.session_key),
+                          onClick: () => onOpenEngine(task, latest),
                           style: {
-                            ...pill, width: '100%', background: T.accentSoft, color: T.accent,
+                            ...pill, width: '100%', marginTop: 10, background: T.accentSoft, color: T.accent,
                             border: '1px solid rgba(124,58,237,0.3)', justifyContent: 'flex-start',
                           },
                           children: [
-                            _jsx(MessageSquare, { size: 14 }),
-                            'Open agent session',
+                            currentEngine === 'task_runner' ? _jsx(Play, { size: 14 }) : _jsx(MessageSquare, { size: 14 }),
+                            currentEngine === 'task_runner' ? 'Open Task Runner' : 'Open agent session',
                             _jsx(ExternalLink, { size: 12, style: { marginLeft: 'auto', opacity: 0.7 } }),
                           ],
-                        }),
-                        _jsx('p', {
-                          style: { margin: '6px 0 0', fontSize: 10, color: T.muted },
-                          children: running ? 'The agent is working — watch it live.' : 'Read the full transcript of the last run.',
                         }),
                       ],
                     }),
@@ -691,10 +753,11 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenSe
                               children: [
                                 _jsx('span', { style: { width: 6, height: 6, borderRadius: '50%', background: dot, flexShrink: 0 }, 'aria-hidden': true }),
                                 _jsx('span', { style: { fontWeight: 500, color: dot, flexShrink: 0 }, children: exec.result ? (RESULT_LABELS[exec.result] || exec.result) : 'Running' }),
+                                _jsx(EngineBadge, { engine: exec.engine || 'chat' }),
                                 _jsx('span', { style: { color: T.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: duration(exec.started_at, exec.ended_at) }),
-                                exec.session_key && _jsxs('button', {
+                                (exec.session_key || exec.runner_id) && _jsxs('button', {
                                   type: 'button',
-                                  onClick: () => onOpenSession(exec.session_key),
+                                  onClick: () => onOpenEngine(task, exec),
                                   style: {
                                     marginLeft: 'auto', flexShrink: 0, background: 'transparent', border: 'none',
                                     cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center',
@@ -786,6 +849,7 @@ export default function KanbanApp() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   // Survives the form's own unmount so a failed create can hand the prompt back.
   const [draftPrompt, setDraftPrompt] = useState('')
+  const [draftEngine, setDraftEngine] = useState('auto')
   const [moveMenuTask, setMoveMenuTask] = useState(null)
   // Every mutation can fail in a way the user must see rather than infer from
   // nothing happening (a 400 on a blank title, a 409 on Run while running).
@@ -850,7 +914,7 @@ export default function KanbanApp() {
       .finally(() => setRunBusyId(null))
   }, [refresh, onError])
 
-  const handleCreate = useCallback(prompt => {
+  const handleCreate = useCallback(({ prompt, engine }) => {
     // Dismiss first, then dispatch. Creating a card does not wait on a model —
     // the backend returns a provisional title and names it a few seconds later
     // — so holding the form open until the POST returns would leave the user
@@ -858,10 +922,11 @@ export default function KanbanApp() {
     // submit. Dismissing does not risk the text: a failed create re-opens the
     // form with the prompt restored, alongside the error banner.
     setShowCreateForm(false)
-    api('/tasks', jsonBody({ prompt, status: 'todo' }))
-      .then(() => { setDraftPrompt(''); refresh() })
+    api('/tasks', jsonBody({ prompt, status: 'todo', engine }))
+      .then(() => { setDraftPrompt(''); setDraftEngine('auto'); refresh() })
       .catch(err => {
         setDraftPrompt(prompt)
+        setDraftEngine(engine)
         setShowCreateForm(true)
         onError(err)
       })
@@ -877,9 +942,20 @@ export default function KanbanApp() {
       .catch(onError)
   }, [refresh, onError])
 
-  // The dashboard addresses a session by its slot key in the `sid` query param.
-  const handleOpenSession = useCallback(sessionKey => {
-    navigate(`/chat?sid=${encodeURIComponent(sessionKey)}`)
+  // Route to the Host surface that owns the execution. Autopilot intentionally
+  // uses the Chat route too: the slot is created in orchestrator mode, so the
+  // destination shows the plan and its human approval controls.
+  const handleOpenEngine = useCallback((task, execution) => {
+    const engine = execution?.engine || task.active_engine || task.engine || 'auto'
+    if (engine === 'task_runner') {
+      navigate('/projects')
+      return
+    }
+    if (execution?.session_key) {
+      navigate(`/chat?sid=${encodeURIComponent(execution.session_key)}`)
+      return
+    }
+    setActionError('This task has not started an engine session yet.')
   }, [navigate])
 
   // ── Derived ──
@@ -985,7 +1061,7 @@ export default function KanbanApp() {
                     task,
                     onClick: t => setSelectedId(t.id),
                     onRun: column.id === 'running' ? undefined : handleRun,
-                    onOpenSession: handleOpenSession,
+                    onOpenEngine: handleOpenEngine,
                     onMoveMenu: setMoveMenuTask,
                     runBusy: runBusyId === task.id,
                   }, task.id)),
@@ -1001,7 +1077,7 @@ export default function KanbanApp() {
         onMove: handleMove,
         onRun: handleRun,
         onDelete: handleDelete,
-        onOpenSession: handleOpenSession,
+        onOpenEngine: handleOpenEngine,
       }),
       moveMenuTask && _jsx(MoveMenu, {
         task: moveMenuTask,
@@ -1010,8 +1086,9 @@ export default function KanbanApp() {
       }),
       showCreateForm && _jsx(CreateTaskForm, {
         initialPrompt: draftPrompt,
+        initialEngine: draftEngine,
         onSubmit: handleCreate,
-        onCancel: () => { setDraftPrompt(''); setShowCreateForm(false) },
+        onCancel: () => { setDraftPrompt(''); setDraftEngine('auto'); setShowCreateForm(false) },
       }),
     ],
   })
