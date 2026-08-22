@@ -85,8 +85,12 @@ with sync_playwright() as p:
 
     # A fresh home is a real first run: setup/onboarding dialogs mount over the
     # page and intercept pointer events. Dismiss them before interacting.
-    for _ in range(4):
+    for _ in range(20):
         page.wait_for_timeout(500)
+        skip_all = page.get_by_text("Skip all", exact=True)
+        if skip_all.count() > 0 and skip_all.first.is_visible():
+            skip_all.first.click()
+            continue
         dialogs = page.locator('[role="dialog"]')
         if dialogs.count() == 0 or not dialogs.first.is_visible():
             break
