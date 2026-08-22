@@ -1,8 +1,9 @@
 # Kanban — a task board for KiroCrew
 
 A board where **each card is a prompt an agent runs for you**. Say what you want
-in one field; the board writes the card. Press Run and it opens a real chat
-session you can watch live and read afterwards.
+in one field, choose an engine, and the board writes the card. Press Run and it
+starts the selected Host engine; opening the card takes you to the matching
+Chat, Task Runner, or Autopilot surface.
 
 Inspired by [dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui)'s task
 board, rebuilt on KiroCrew's own chat sessions and cron service.
@@ -12,9 +13,13 @@ board, rebuilt on KiroCrew's own chat sessions and cron service.
 - **One field to create.** You describe the task; the board derives a title and a
   short summary and drops the card in **To do** so you can look it over before it
   runs. Nothing runs until you say so.
-- **Running a card opens a real session.** Not a hidden background worker — a
-  named chat session that shows up in your Sessions list. The card links straight
-  to it, live while it works and as a transcript afterwards.
+- **Engine routing.** Choose **Chat** for a focused request, **Task Runner** for
+  multi-step execution, or **Autopilot** when you want a plan-and-approval Chat
+  session. **Auto** sends short requests to Chat and structured or multi-step
+  prompts to Task Runner.
+- **Engine-aware navigation.** The card detail shows the resolved engine for its
+  latest run. Chat and Autopilot open their named Chat session; Task Runner opens
+  the host's Tasks page.
 - **Five columns, drag to move.** Backlog → To do → Running → Done → Failed.
   `Running` is not a drop target: a card enters it by running and leaves it by
   settling, so the board can't lie about what is actually happening.

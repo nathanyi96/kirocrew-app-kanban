@@ -10,11 +10,14 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 PORT = int(os.environ.get("KC_PORT", "7891"))
 BASE = f"http://127.0.0.1:{PORT}"
 
 from kiro_crew.dashboard.token_auth import generate_token  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from backend.routes import _resolve_engine  # noqa: E402
 
 COOKIE = f"mc_token_{PORT}={generate_token('ci', ttl_seconds=1800, register_nonce=False)}"
 
@@ -45,6 +48,30 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 s, body = call("GET", "/api/apps/kanban/tasks")
 check("list -> 200", s == 200, f"status={s}")
 check("board shape", isinstance(body, dict) and "tasks" in body, str(body)[:100])
+taskrunner_status, taskrunner_body = call("GET", "/api/taskrunner")
+check(
+    "task runner is installed and available",
+    taskrunner_status == 200 and isinstance(taskrunner_body, dict) and taskrunner_body.get("available") is True,
+    f"status={taskrunner_status} {str(taskrunner_body)[:100]}",
+)
+check("auto routes simple prompt to chat", _resolve_engine("auto", "Summarize this note") == "chat")
+check(
+    "auto routes multi-step prompt to task runner",
+    _resolve_engine("auto", "Implement a multi-step release workflow") == "task_runner",
+)
+
+s, body = call(
+    "POST",
+    "/api/apps/kanban/tasks",
+    {"prompt": "Plan a multi-step release workflow", "engine": "task_runner"},
+)
+engine_tid = body.get("id", "") if isinstance(body, dict) else ""
+check("create with engine -> 201", s == 201, f"status={s}")
+check(
+    "engine preference persists",
+    body.get("engine") == "task_runner" if isinstance(body, dict) else False,
+    str(body)[:120],
+)
 
 s, body = call("POST", "/api/apps/kanban/tasks", {"prompt": "CI smoke task"})
 tid = body.get("id", "") if isinstance(body, dict) else ""
@@ -66,6 +93,8 @@ check("reconcile -> 200", s == 200, f"status={s} {str(body)[:60]}")
 
 s, _ = call("DELETE", f"/api/apps/kanban/tasks/{tid}")
 check("delete -> 200", s == 200, f"status={s}")
+s, _ = call("DELETE", f"/api/apps/kanban/tasks/{engine_tid}")
+check("delete engine task -> 200", s == 200, f"status={s}")
 
 s, body = call("GET", "/api/apps/kanban/tasks")
 ids = [t.get("id") for t in body.get("tasks", [])] if isinstance(body, dict) else []
