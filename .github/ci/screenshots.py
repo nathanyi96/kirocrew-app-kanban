@@ -157,6 +157,7 @@ with sync_playwright() as p:
     )
     page.get_by_role("button", name="Open agent session").click()
     page.wait_for_url("**/chat?sid=*", timeout=15000)
+    expect(page.get_by_role("textbox", name="Message input")).to_be_visible(timeout=15000)
     expect(page.locator("body")).to_contain_text(prompt, timeout=15000)
     page.screenshot(path=str(OUT / "07-chat-live.png"), full_page=True)
 
@@ -192,6 +193,7 @@ with sync_playwright() as p:
     # transcript rather than a new feature-specific detail page.
     detail.get_by_role("button", name="Open agent session").click()
     page.wait_for_url("**/chat?sid=*", timeout=15000)
+    expect(page.get_by_role("textbox", name="Message input")).to_be_visible(timeout=15000)
     expect(page.locator("body")).to_contain_text(prompt, timeout=15000)
     page.screenshot(path=str(OUT / "10-chat-transcript.png"), full_page=True)
 
