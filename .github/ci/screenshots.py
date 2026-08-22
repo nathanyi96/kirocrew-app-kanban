@@ -96,9 +96,9 @@ with sync_playwright() as p:
             close.first.click()
 
     # Step 1: show how a user enters the installed app from the host dashboard.
-    app_link = page.locator('a[href="/apps/kanban"], a[href$="/apps/kanban"]').first
-    expect(app_link).to_be_visible(timeout=15000)
+    app_link = page.get_by_role("button", name="Kanban", exact=True)
     page.screenshot(path=str(OUT / "01-host-dashboard.png"), full_page=True)
+    expect(app_link).to_be_visible(timeout=15000)
     app_link.click()
     page.wait_for_url("**/apps/kanban", timeout=15000)
 
@@ -158,7 +158,7 @@ with sync_playwright() as p:
 
     # Step 6: return through the host navigation, wait for the real turn to
     # settle, and capture the Done card plus its finished execution detail.
-    kanban_link = page.locator('a[href="/apps/kanban"], a[href$="/apps/kanban"]').first
+    kanban_link = page.get_by_role("button", name="Kanban", exact=True)
     expect(kanban_link).to_be_visible(timeout=15000)
     kanban_link.click()
     page.wait_for_url("**/apps/kanban", timeout=15000)
