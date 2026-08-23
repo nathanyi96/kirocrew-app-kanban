@@ -347,6 +347,39 @@ with sync_playwright() as p:
     expect(autopilot_detail.get_by_text("Autopilot", exact=True).first).to_be_visible(timeout=15000)
     page.screenshot(path=str(OUT / "17-autopilot-completed-detail.png"), full_page=True)
 
+    # Step 10: prove the user-facing prerequisite prompt. CI's Host has Task
+    # Runner enabled, so intercept this one run response with the same
+    # structured 409 the backend returns when the Host does not expose it.
+    enable_prompt_text = "Task Runner E2E: prompt before enablement."
+    enable_prompt_created = create_ui_task(enable_prompt_text, "task_runner")
+    enable_prompt_id = enable_prompt_created["id"]
+    enable_prompt_card = page.locator("[role=\"button\"]").filter(has_text=enable_prompt_text).first
+    expect(enable_prompt_card).to_be_visible(timeout=15000)
+    enable_prompt_card.click()
+    enable_prompt_detail = page.get_by_role("dialog", name="Task detail")
+    expect(enable_prompt_detail.get_by_text("Task Runner", exact=True)).to_be_visible(timeout=15000)
+    page.screenshot(path=str(OUT / "18-task-runner-enable-before.png"), full_page=True)
+    page.route(
+        f"**/api/apps/kanban/tasks/{enable_prompt_id}/run",
+        lambda route: route.fulfill(
+            status=409,
+            content_type="application/json",
+            body=json.dumps({
+                "error": "This task was classified for Task Runner, but Task Runner is not enabled on this Host. Open Task Runner to enable it, then retry this task.",
+                "code": "task_runner_not_enabled",
+                "engine": "task_runner",
+                "action": {"label": "Open Task Runner", "path": "/projects"},
+            }),
+        ),
+    )
+    enable_prompt_detail.get_by_role("button", name="Run", exact=True).click()
+    enable_prompt_dialog = page.get_by_role("dialog", name="Enable Task Runner")
+    expect(enable_prompt_dialog).to_be_visible(timeout=15000)
+    expect(enable_prompt_dialog).to_contain_text("Task Runner is not enabled", timeout=15000)
+    page.screenshot(path=str(OUT / "19-task-runner-enable-prompt.png"), full_page=True)
+    enable_prompt_dialog.get_by_role("button", name="Not now", exact=True).click()
+    page.unroute(f"**/api/apps/kanban/tasks/{enable_prompt_id}/run")
+
     browser.close()
 
 expected_shots = [f"{index:02d}-{name}.png" for index, name in enumerate([
@@ -367,6 +400,8 @@ expected_shots = [f"{index:02d}-{name}.png" for index, name in enumerate([
     "autopilot-running",
     "autopilot-session",
     "autopilot-completed-detail",
+    "task-runner-enable-before",
+    "task-runner-enable-prompt",
 ], start=1)]
 shots = sorted(f.name for f in OUT.glob("*.png"))
 missing = sorted(set(expected_shots) - set(shots))

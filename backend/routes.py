@@ -1240,6 +1240,31 @@ def _task_runner_spec(task: TaskRecord, prompt: str) -> str:
     )
 
 
+TASK_RUNNER_NOT_ENABLED_MESSAGE = (
+    "This task was classified for Task Runner, but Task Runner is not enabled "
+    "on this Host. Open Task Runner to enable it, then retry this task."
+)
+
+
+def _task_runner_is_available(state: Any) -> bool:
+    """Return whether this Host exposes a usable Task Runner instance."""
+    runner = getattr(state, "task_runner", None)
+    return runner is not None and callable(getattr(runner, "start_background", None))
+
+
+def _task_runner_not_enabled_payload() -> dict[str, Any]:
+    """Build the user-actionable response for a missing Task Runner."""
+    return {
+        "error": TASK_RUNNER_NOT_ENABLED_MESSAGE,
+        "code": "task_runner_not_enabled",
+        "engine": "task_runner",
+        "action": {
+            "label": "Open Task Runner",
+            "path": "/projects",
+        },
+    }
+
+
 async def _start_task_runner(
     state: Any,
     store: KanbanStore,
@@ -1249,7 +1274,7 @@ async def _start_task_runner(
 ) -> str:
     """Start a real Host Task Runner execution for a Kanban card."""
     runner = getattr(state, "task_runner", None)
-    if runner is None or not hasattr(runner, "start_background"):
+    if not _task_runner_is_available(state):
         raise RuntimeError("Task Runner is not available on this gateway")
     work_dir = Path(getattr(runner, "_work_dir", Path.cwd()))
     spec_path = work_dir / f"KANBAN_{uuid.uuid4().hex[:12]}.md"
@@ -1317,6 +1342,19 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
             },
             status=503,
         )
+
+    # Preflight the resolved engine before claiming the card. A missing Host
+    # Task Runner is an actionable user prerequisite, not an execution failure:
+    # leave the card runnable and tell the UI to prompt for enablement rather
+    # than auto-enabling anything or creating a failed execution record.
+    current = await asyncio.to_thread(store.get_task, task_id)
+    if current is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+    if current.status != "running":
+        current_prompt = current.prompt.strip() or current.title
+        current_engine = _resolve_engine(current.engine, current_prompt)
+        if current_engine == "task_runner" and not _task_runner_is_available(state):
+            return web.json_response(_task_runner_not_enabled_payload(), status=409)
 
     # Claim the run atomically. Reading the record, checking it, and then writing
     # a whole replacement built from that snapshot is a race: two rapid Run

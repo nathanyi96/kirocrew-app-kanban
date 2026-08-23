@@ -17,7 +17,11 @@ BASE = f"http://127.0.0.1:{PORT}"
 
 from kiro_crew.dashboard.token_auth import generate_token  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from backend.routes import _resolve_engine  # noqa: E402
+from backend.routes import (  # noqa: E402
+    _resolve_engine,
+    _task_runner_is_available,
+    _task_runner_not_enabled_payload,
+)
 
 COOKIE = f"mc_token_{PORT}={generate_token('ci', ttl_seconds=1800, register_nonce=False)}"
 
@@ -58,6 +62,20 @@ check("auto routes simple prompt to chat", _resolve_engine("auto", "Summarize th
 check(
     "auto routes multi-step prompt to task runner",
     _resolve_engine("auto", "Implement a multi-step release workflow") == "task_runner",
+)
+
+
+class _HostWithoutTaskRunner:
+    task_runner = None
+
+
+not_enabled = _task_runner_not_enabled_payload()
+check(
+    "missing task runner prompts for enablement",
+    not _task_runner_is_available(_HostWithoutTaskRunner())
+    and not_enabled.get("code") == "task_runner_not_enabled"
+    and not_enabled.get("action", {}).get("path") == "/projects",
+    str(not_enabled),
 )
 
 s, body = call(

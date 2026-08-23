@@ -43,6 +43,11 @@ const T = {
   info: 'var(--info, #0891b2)',
 }
 
+const actionPill = {
+  display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none',
+  borderRadius: 7, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+}
+
 const COLUMNS = [
   { id: 'backlog', label: 'Backlog', accent: T.muted },
   { id: 'todo', label: 'To do', accent: T.info },
@@ -92,6 +97,15 @@ function EngineBadge({ engine }) {
 
 // ── API helpers ──
 
+class KanbanApiError extends Error {
+  constructor(message, details = {}) {
+    super(message)
+    this.name = 'KanbanApiError'
+    this.code = details.code || ''
+    this.action = details.action || null
+  }
+}
+
 /**
  * Turn a non-2xx response into an Error carrying the message a user should
  * read. Every kanban endpoint answers a refusal with `{error, code}`, so the
@@ -104,11 +118,13 @@ async function api(path, options) {
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     let message = `${res.status}${body ? `: ${body}` : ''}`
+    let details = {}
     try {
       const parsed = JSON.parse(body)
+      details = parsed && typeof parsed === 'object' ? parsed : {}
       if (parsed && typeof parsed.error === 'string' && parsed.error) message = parsed.error
     } catch { /* not JSON — keep the status line */ }
-    throw new Error(message)
+    throw new KanbanApiError(message, details)
   }
   if (res.status === 204) return null
   return res.json()
@@ -854,6 +870,7 @@ export default function KanbanApp() {
   // Every mutation can fail in a way the user must see rather than infer from
   // nothing happening (a 400 on a blank title, a 409 on Run while running).
   const [actionError, setActionError] = useState(null)
+  const [taskRunnerPrompt, setTaskRunnerPrompt] = useState(null)
   const [runBusyId, setRunBusyId] = useState(null)
 
   const tasksRef = useRef(tasks)
@@ -910,7 +927,14 @@ export default function KanbanApp() {
     setRunBusyId(task.id)
     api(`/tasks/${task.id}/run`, jsonBody({}))
       .then(refresh)
-      .catch(onError)
+      .catch(err => {
+        if (err?.code === 'task_runner_not_enabled') {
+          setActionError(null)
+          setTaskRunnerPrompt({ task, message: err.message, action: err.action })
+          return
+        }
+        onError(err)
+      })
       .finally(() => setRunBusyId(null))
   }, [refresh, onError])
 
@@ -1037,6 +1061,59 @@ export default function KanbanApp() {
           _jsx('span', { style: { flex: 1 }, children: actionError }),
           _jsx(IconButton, { label: 'Dismiss error', onClick: () => setActionError(null), style: { color: T.danger, padding: 0 }, children: _jsx(X, { size: 14 }) }),
         ],
+      }),
+      taskRunnerPrompt && _jsx('div', {
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': 'Enable Task Runner',
+        style: {
+          position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', padding: 20, background: 'rgba(0,0,0,0.46)',
+        },
+        children: _jsxs('div', {
+          style: {
+            width: 'min(460px, 100%)', background: T.card, color: T.text,
+            border: `1px solid ${T.borderStrong}`, borderRadius: 12, padding: 20,
+            boxShadow: '0 18px 50px rgba(0,0,0,0.35)',
+          },
+          children: [
+            _jsxs('div', {
+              style: { display: 'flex', alignItems: 'flex-start', gap: 10 },
+              children: [
+                _jsx(AlertCircle, { size: 18, style: { color: T.warn, flexShrink: 0, marginTop: 2 } }),
+                _jsxs('div', {
+                  style: { flex: 1 },
+                  children: [
+                    _jsx('h2', { style: { margin: 0, fontSize: 16, color: T.strong }, children: 'Enable Task Runner' }),
+                    _jsx('p', { style: { margin: '10px 0 0', fontSize: 13, lineHeight: 1.5 }, children: taskRunnerPrompt.message }),
+                    _jsx('p', { style: { margin: '8px 0 0', fontSize: 12, color: T.muted, lineHeight: 1.5 }, children: 'Nothing was started and this task remains ready to run.' }),
+                  ],
+                }),
+                _jsx(IconButton, { label: 'Close enable prompt', onClick: () => setTaskRunnerPrompt(null), children: _jsx(X, { size: 15 }) }),
+              ],
+            }),
+            _jsxs('div', {
+              style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 },
+              children: [
+                _jsx('button', {
+                  type: 'button',
+                  onClick: () => setTaskRunnerPrompt(null),
+                  style: { ...actionPill, background: T.hover, color: T.text },
+                  children: 'Not now',
+                }),
+                _jsx('button', {
+                  type: 'button',
+                  onClick: () => {
+                    setTaskRunnerPrompt(null)
+                    navigate(taskRunnerPrompt.action?.path || '/projects')
+                  },
+                  style: { ...actionPill, background: T.accent, color: '#fff' },
+                  children: taskRunnerPrompt.action?.label || 'Open Task Runner',
+                }),
+              ],
+            }),
+          ],
+        }),
       }),
       // Board
       _jsx('div', {
