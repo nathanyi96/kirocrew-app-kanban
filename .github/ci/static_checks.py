@@ -2,9 +2,9 @@
 and byte-compile the backend. Runs against the installed kirocrew wheel, so a
 schema change in a new KiroCrew release fails here rather than at install time.
 
-Also enforces that review evidence stays out of git: this repository is an
-installable app, so anything tracked here is copied into every user's
-``~/.kiro/crew/apps/kanban/`` by ``kirocrew app install``.
+Also enforces that review media is isolated under ``docs/e2e/``: this
+repository is an installable app, so product assets and temporary review
+evidence must remain distinguishable.
 """
 
 import py_compile
@@ -16,8 +16,8 @@ from kiro_crew.apps.manifest import AppManifest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Raster and video formats only. ``ui/`` is exempt because the app's own icon
-# and any future UI asset are shipped product, not review evidence.
+# Raster and video formats only. ``ui/`` contains shipped product assets and
+# ``docs/e2e/`` contains temporary review evidence.
 _EVIDENCE_SUFFIXES = {
     ".png",
     ".jpg",
@@ -31,17 +31,11 @@ _EVIDENCE_SUFFIXES = {
     ".mov",
     ".webm",
 }
-_SHIPPED_ASSET_DIRS = ("ui/",)
+_ALLOWED_MEDIA_DIRS = ("ui/", "docs/e2e/")
 
 
-def check_no_committed_evidence() -> list[str]:
-    """Return tracked screenshot/video paths that must not be in the repo.
-
-    Evidence belongs to the ``e2e-evidence`` workflow artifact (see
-    CONTRIBUTING.md). Committing it ships megabytes to every installed copy,
-    can never be reclaimed from history, and 404s once the PR branch is
-    deleted.
-    """
+def check_no_unscoped_media() -> list[str]:
+    """Return tracked screenshot/video paths outside allowed media dirs."""
     try:
         out = subprocess.run(
             ["git", "ls-files", "-z"],
@@ -60,7 +54,7 @@ def check_no_committed_evidence() -> list[str]:
     for path in out.split("\0"):
         if not path:
             continue
-        if path.startswith(_SHIPPED_ASSET_DIRS):
+        if path.startswith(_ALLOWED_MEDIA_DIRS):
             continue
         if Path(path).suffix.lower() in _EVIDENCE_SUFFIXES:
             offenders.append(path)
@@ -77,10 +71,9 @@ if errors:
 
 py_compile.compile(str(ROOT / "backend" / "routes.py"), doraise=True)
 
-evidence = check_no_committed_evidence()
+evidence = check_no_unscoped_media()
 if evidence:
-    print("  ERROR: review evidence must not be committed to this repository.")
-    print("  Link the run's e2e-evidence artifact instead (see CONTRIBUTING.md).")
+    print("  ERROR: media must be under ui/ or docs/e2e/.")
     for path in evidence:
         print(f"    {path}")
     sys.exit(1)
