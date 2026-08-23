@@ -7,6 +7,11 @@ app-crons.json
 installed.json
 data/
 
+# Review evidence belongs to the e2e-evidence workflow artifact, never to git:
+# this app's whole directory is copied into every user's install.
+/docs/e2e/
+/e2e-shots/
+
 # Python
 __pycache__/
 *.py[cod]

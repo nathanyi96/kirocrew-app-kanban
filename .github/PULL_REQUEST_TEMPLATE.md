@@ -8,18 +8,18 @@
 - [ ] Successful workflow run: <!-- paste Actions run URL -->
 - [ ] API/static checks passed.
 
-## Playwright E2E screenshots
+## E2E journey
 
-<!-- Required for every app-changing PR. Add a GIF generated from the
-     successful run's e2e-evidence artifact. The GIF must show the feature or
-     fix in this PR, or the complete end-to-end flow when there is no isolated
-     user path. Include the original PNG frames and artifact link too. Engine
-     routing changes must include Chat, Task Runner, and Autopilot evidence. -->
+<!-- Name the user paths the Playwright journey covered, end to end. The
+     frames themselves live in that run's `e2e-evidence` artifact — link the
+     run, do NOT commit screenshots, GIFs, or videos to this repository (CI
+     fails on that). To show images inline, drag and drop them into this
+     description box; GitHub hosts them outside the repo. -->
 
-- [ ] GIF evidence embedded: <!-- changed feature/fix or complete E2E flow -->
-- [ ] GIF was generated from the successful run's e2e-evidence frames.
-- [ ] Screenshot gallery added to this description.
-- [ ] Artifact link added: <!-- paste e2e-evidence / Actions URL -->
+- [ ] Paths covered are named above (engine-routing changes must cover Chat,
+      Task Runner, and Autopilot).
+- [ ] The `e2e-evidence` artifact link is in this description.
+- [ ] No screenshot, GIF, or video was added to the repository.
 
 ## Notes
 
