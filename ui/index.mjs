@@ -581,14 +581,16 @@ function CreateTaskForm({ initialPrompt, initialEngine, onSubmit, onCancel }) {
 
 // ── Task detail modal ──
 
-function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEngine }) {
+function LegacyTaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEngine }) {
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [prompt, setPrompt] = useState(task.prompt)
+  const [assignee, setAssignee] = useState(task.assignee || '')
+  const [metadataText, setMetadataText] = useState(JSON.stringify(task.metadata || {}, null, 2))
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
 
-  const isDirty = title !== task.title || description !== task.description || prompt !== task.prompt
+  const isDirty = title !== task.title || description !== task.description || prompt !== task.prompt || assignee !== (task.assignee || '') || metadataText !== JSON.stringify(task.metadata || {}, null, 2)
   const latest = task.executions.length ? task.executions[task.executions.length - 1] : null
   const currentEngine = taskEngine(task)
   const engineHelp = ENGINE_OPTIONS.find(option => option.id === currentEngine)?.help || 'Engine selected for this task'
@@ -628,7 +630,13 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEn
     return () => window.removeEventListener('keydown', onKey)
   }, [requestClose])
 
-  const save = () => { if (isDirty) onUpdate(task.id, { title, description, prompt }) }
+  const save = () => {
+    if (!isDirty) return
+    let metadata
+    try { metadata = JSON.parse(metadataText || '{}') } catch { return }
+    if (!metadata || Array.isArray(metadata) || Object.values(metadata).some(value => typeof value !== 'string')) return
+    onUpdate(task.id, { title, description, prompt, assignee: assignee || null, metadata })
+  }
 
   const label = { display: 'block', fontSize: 11, fontWeight: 500, color: T.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }
   const input = {
@@ -642,7 +650,7 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEn
   }
 
   return _jsxs('div', {
-    style: { position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 },
+    style: { position: 'fixed', top: 0, left: 0, bottom: 0, width: '100vw', maxWidth: '100vw', zIndex: 50, display: 'flex', justifyContent: 'flex-end', overflow: 'hidden' },
     children: [
       // Backdrop is a SIBLING of the dialog, never a wrapper — wrapping would
       // put the dialog's own controls inside a role="button". A real <button>
@@ -656,10 +664,10 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEn
       _jsxs('div', {
         role: 'dialog', 'aria-modal': true, 'aria-label': 'Task detail',
         style: {
-          position: 'relative', width: '100%', maxWidth: 760, maxHeight: '85vh',
-          background: T.elevated, border: `1px solid ${T.border}`, borderRadius: 12,
+          position: 'relative', width: 'min(460px, 92vw)', height: '100%',
+          background: T.elevated, borderLeft: `1px solid ${T.border}`,
           display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
+          boxShadow: '-12px 0 40px rgba(0,0,0,0.28)', animation: 'kanban-drawer-in 180ms ease-out',
         },
         children: [
           // Header: the lane is a CONTROL, not a badge — on a touch screen this
@@ -705,6 +713,14 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEn
                     _jsxs('div', { children: [
                       _jsx('label', { htmlFor: 'kanban-detail-prompt', style: label, children: 'Execution prompt' }),
                       _jsx('textarea', { id: 'kanban-detail-prompt', value: prompt, onChange: e => setPrompt(e.target.value), placeholder: 'What the agent is asked to do…', style: { ...input, minHeight: 140, resize: 'vertical', fontFamily: 'ui-monospace, monospace', fontSize: 12 } }),
+                    ] }),
+                    _jsxs('div', { children: [
+                      _jsx('label', { htmlFor: 'kanban-detail-assignee', style: label, children: 'Assignee / owner' }),
+                      _jsx('input', { id: 'kanban-detail-assignee', value: assignee, onChange: e => setAssignee(e.target.value), placeholder: 'Unassigned', style: input }),
+                    ] }),
+                    _jsxs('div', { children: [
+                      _jsx('label', { htmlFor: 'kanban-detail-metadata', style: label, children: 'Metadata (JSON)' }),
+                      _jsx('textarea', { id: 'kanban-detail-metadata', value: metadataText, onChange: e => setMetadataText(e.target.value), style: { ...input, minHeight: 68, resize: 'vertical', fontFamily: 'ui-monospace, monospace', fontSize: 11 } }),
                     ] }),
                     isDirty && _jsx('button', {
                       type: 'button', onClick: save,
@@ -796,6 +812,13 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEn
               ],
             }),
           }),
+          task.activity?.length > 0 && _jsxs('div', {
+            style: { padding: '0 20px 14px' },
+            children: [
+              _jsx('div', { style: { ...label, marginBottom: 8 }, children: 'Activity' }),
+              _jsx('div', { 'aria-label': 'Task activity', style: { display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 150, overflowY: 'auto' }, children: [...task.activity].reverse().map(item => _jsxs('div', { style: { fontSize: 11, color: T.muted, padding: '5px 8px', borderLeft: `2px solid ${T.accent}` }, children: [_jsx('strong', { style: { color: T.text }, children: item.kind.replaceAll('_', ' ') }), ' — ', item.summary] }, item.id)) }),
+            ],
+          }),
           // Footer actions
           _jsxs('div', {
             style: { display: 'flex', gap: 8, padding: '12px 20px', borderTop: `1px solid ${T.border}` },
@@ -844,6 +867,269 @@ function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEn
               }),
             ],
           }),
+        ],
+      }),
+    ],
+  })
+}
+
+// ── Task detail drawer ──
+
+/**
+ * The drawer follows the issue detail model rather than treating the raw
+ * prompt as the page. The first screen answers three questions immediately:
+ * what is this, where is it, and what can I do next? The original prompt and
+ * description remain available as low-priority context, but do not compete
+ * with status, execution, activity, or ownership.
+ */
+function TaskDetail({ task, onClose, onUpdate, onMove, onRun, onDelete, onOpenEngine }) {
+  const [title, setTitle] = useState(task.title)
+  const [assignee, setAssignee] = useState(task.assignee || '')
+  const [metadataText, setMetadataText] = useState(JSON.stringify(task.metadata || {}, null, 2))
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [drawerLeft, setDrawerLeft] = useState(null)
+  const drawerOverlayRef = useRef(null)
+  const latest = task.executions.length ? task.executions[task.executions.length - 1] : null
+  const currentEngine = taskEngine(task)
+  const running = task.status === 'running'
+  const col = COLUMNS.find(c => c.id === task.status)
+  const latestError = [...task.executions].reverse().find(execution => execution.error)?.error
+  const latestProgress = latest?.progress_detail || latest?.progress
+  const isDirty = title !== task.title || assignee !== (task.assignee || '') || metadataText !== JSON.stringify(task.metadata || {}, null, 2)
+
+  // Adopt background title generation only when the user has not edited it.
+  const seededTitle = useRef(task.title)
+  useEffect(() => {
+    setTitle(current => current === seededTitle.current ? task.title : current)
+    seededTitle.current = task.title
+  }, [task.title])
+
+  const requestClose = useCallback(() => {
+    if (isDirty) { setConfirmDiscard(true); return }
+    onClose()
+  }, [isDirty, onClose])
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') requestClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [requestClose])
+
+  // The host may render the app inside a horizontally translated/scrollable
+  // surface. Measure that surface and place the panel at the visual viewport's
+  // right edge rather than assuming the surface starts at x=0.
+  useEffect(() => {
+    const measureDrawer = () => {
+      const overlay = drawerOverlayRef.current
+      if (!overlay) return
+      const panelWidth = Math.min(520, window.innerWidth * 0.94)
+      const overlayLeft = overlay.getBoundingClientRect().left
+      setDrawerLeft(Math.max(0, window.innerWidth - panelWidth - overlayLeft))
+    }
+    measureDrawer()
+    window.addEventListener('resize', measureDrawer)
+    window.addEventListener('scroll', measureDrawer, true)
+    return () => {
+      window.removeEventListener('resize', measureDrawer)
+      window.removeEventListener('scroll', measureDrawer, true)
+    }
+  }, [])
+
+  const save = () => {
+    if (!isDirty) return
+    let metadata
+    try { metadata = JSON.parse(metadataText || '{}') } catch { return }
+    if (!metadata || Array.isArray(metadata) || Object.values(metadata).some(value => typeof value !== 'string')) return
+    onUpdate(task.id, { title, assignee: assignee || null, metadata })
+  }
+
+  const label = { fontSize: 10, fontWeight: 600, color: T.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }
+  const muted = { fontSize: 12, color: T.muted, lineHeight: 1.45 }
+  const input = {
+    width: '100%', boxSizing: 'border-box', background: T.bg, color: T.strong,
+    border: `1px solid ${T.border}`, borderRadius: 7, padding: '7px 9px', fontSize: 12,
+    outline: 'none', fontFamily: 'inherit',
+  }
+  const card = {
+    background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14,
+  }
+  const pill = {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '8px 12px', border: 'none',
+  }
+  const outcome = latest?.result ? (RESULT_LABELS[latest.result] || latest.result) : running ? 'Running' : 'Not started'
+  const outcomeColor = latest?.result === 'succeeded' ? T.ok : latest?.result === 'failed' ? T.danger : running ? T.warn : T.muted
+  const destinationLabel = currentEngine === 'task_runner' ? 'Open Task Runner' : 'Open agent session'
+  const destinationIcon = currentEngine === 'task_runner' ? _jsx(Play, { size: 14 }) : _jsx(MessageSquare, { size: 14 })
+
+  return _jsxs('div', {
+    // The board can be wider than the viewport because its columns scroll
+    // horizontally. Anchor the drawer to the viewport, not that scrollable
+    // layout, or only a thin slice of the panel is visible on wide boards.
+    ref: drawerOverlayRef,
+    style: { position: 'fixed', top: 0, left: 0, bottom: 0, width: '100vw', maxWidth: '100vw', zIndex: 50, display: 'flex', justifyContent: 'flex-end', overflow: 'hidden' },
+    children: [
+      _jsx('button', {
+        type: 'button', 'aria-label': 'Close task detail', onClick: requestClose,
+        style: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(2px)', border: 'none', cursor: 'default' },
+      }),
+      _jsxs('div', {
+        role: 'dialog', 'aria-modal': true, 'aria-label': 'Task detail',
+        style: {
+          // The board's content can be wider than the viewport. Anchor the
+          // panel from the viewport's left edge instead of the board's right
+          // edge, so a horizontally scrollable board cannot push it offscreen.
+          position: 'absolute', top: 0, left: drawerLeft == null ? 0 : drawerLeft, bottom: 0,
+          width: 'min(520px, 94vw)', maxWidth: '100vw', background: T.elevated,
+          borderLeft: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          boxShadow: '-12px 0 40px rgba(0,0,0,0.28)', animation: 'kanban-drawer-in 180ms ease-out',
+        },
+        children: [
+          // Header: identity and filing controls, matching an issue detail page.
+          _jsxs('div', {
+            style: { padding: '16px 20px 14px', borderBottom: `1px solid ${T.border}` },
+            children: [
+              _jsxs('div', {
+                style: { display: 'flex', alignItems: 'flex-start', gap: 10 },
+                children: [
+                  _jsxs('div', { style: { flex: 1, minWidth: 0 }, children: [
+                    _jsx('div', { style: { ...label, marginBottom: 6 }, children: 'Task' }),
+                    _jsx('input', {
+                      id: 'kanban-detail-title', 'aria-label': 'Task title', value: title,
+                      onChange: e => setTitle(e.target.value),
+                      style: { ...input, padding: 0, border: 'none', background: 'transparent', fontSize: 17, fontWeight: 650, color: T.strong },
+                    }),
+                  ] }),
+                  _jsx(IconButton, { label: 'Close', onClick: requestClose, children: _jsx(X, { size: 17 }) }),
+                ],
+              }),
+              _jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 12 },
+                children: [
+                  _jsx('select', {
+                    'aria-label': 'Move to', value: task.status, disabled: running,
+                    onChange: e => onMove(task.id, e.target.value),
+                    style: { background: T.bg, color: col ? col.accent : T.text, border: `1px solid ${T.border}`, borderRadius: 999, fontSize: 11, fontWeight: 600, padding: '4px 9px', cursor: running ? 'not-allowed' : 'pointer' },
+                    children: (running ? COLUMNS.map(c => c.id) : DROP_TARGETS).map(s => _jsx('option', { value: s, children: COLUMNS.find(c => c.id === s).label }, s)),
+                  }),
+                  _jsx(EngineBadge, { engine: currentEngine }),
+                  task.priority && _jsx('span', { style: { borderRadius: 999, padding: '3px 8px', fontSize: 10, color: task.priority === 'high' ? T.danger : T.muted, background: T.bg, border: `1px solid ${T.border}` }, children: `${task.priority} priority` }),
+                  task.refining && _jsxs('span', { style: { ...muted, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10 }, children: [_jsx(Loader2, { size: 10, style: { animation: 'kanban-spin 1s linear infinite' } }), 'Naming…'] }),
+                  _jsx('span', { style: { marginLeft: 'auto', fontSize: 10, color: T.muted }, children: `Updated ${relativeTime(task.updated_at)}` }),
+                ],
+              }),
+            ],
+          }),
+
+          _jsx('div', {
+            style: { flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 14 },
+            children: [
+              // Primary execution card: the next decision is visible without
+              // opening another page, while the engine-specific page remains a
+              // deliberate escape hatch for deeper work.
+              _jsxs('section', {
+                'aria-label': 'Current execution', style: card, children: [
+                  _jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8 }, children: [
+                    _jsx('span', { style: { width: 8, height: 8, borderRadius: '50%', background: outcomeColor }, 'aria-hidden': true }),
+                    _jsx('span', { style: { fontSize: 14, fontWeight: 600, color: outcomeColor }, children: outcome }),
+                    latest && _jsx('span', { style: { ...muted, marginLeft: 'auto' }, children: duration(latest.started_at, latest.ended_at) }),
+                  ] }),
+                  _jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 7, marginTop: 8 }, children: [
+                    _jsx('span', { style: { ...muted, fontWeight: 600 }, children: `Engine: ${ENGINE_LABELS[latest?.engine || currentEngine] || 'Auto'}` }),
+                    _jsx('span', { style: muted, children: latest ? `Run ${task.executions.length} · ${formatTime(latest.started_at)}` : currentEngine === 'auto' ? 'Engine will be chosen when you run this task' : 'Ready to run' }),
+                  ] }),
+                  latestProgress && _jsx('div', { style: { marginTop: 10, padding: '8px 10px', borderRadius: 7, background: T.bg, color: T.text, fontSize: 12, lineHeight: 1.45 }, children: latestProgress }),
+                  latestError && _jsxs('div', { role: 'alert', style: { marginTop: 10, display: 'flex', gap: 6, color: T.danger, fontSize: 12, lineHeight: 1.45 }, children: [_jsx(AlertCircle, { size: 13, style: { flexShrink: 0, marginTop: 1 } }), latestError] }),
+                  _jsxs('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }, children: [
+                    latest && (latest.session_key || latest.runner_id) && _jsxs('button', {
+                      type: 'button', onClick: () => onOpenEngine(task, latest),
+                      style: { ...pill, background: T.accentSoft, color: T.accent, border: '1px solid rgba(124,58,237,0.3)' },
+                      children: [destinationIcon, destinationLabel, _jsx(ExternalLink, { size: 12 })],
+                    }),
+                    !running && _jsxs('button', {
+                      type: 'button', onClick: () => onRun(task), style: { ...pill, background: T.accent, color: '#fff' },
+                      children: [task.executions.length ? _jsx(RotateCw, { size: 13 }) : _jsx(Play, { size: 13 }), task.executions.length ? 'Run again' : 'Run now'],
+                    }),
+                  ] }),
+                ],
+              }),
+
+              // Execution history is the durable record of runs. A completed
+              // run is not the same thing as a finished issue; keep every run
+              // visible and let the current status remain the source of truth.
+              task.executions.length > 0 && _jsxs('section', {
+                'aria-label': 'Execution history', style: card, children: [
+                  _jsxs('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 10 }, children: [
+                    _jsx('span', { style: label, children: 'Execution history' }),
+                    _jsx('span', { style: { marginLeft: 'auto', fontSize: 11, color: T.muted }, children: `${task.executions.length} run${task.executions.length === 1 ? '' : 's'}` }),
+                  ] }),
+                  _jsx('div', { style: { display: 'flex', flexDirection: 'column', gap: 7 }, children: [...task.executions].reverse().map(exec => {
+                    const execColor = exec.result === 'succeeded' ? T.ok : exec.result === 'failed' ? T.danger : exec.result === 'cancelled' ? T.muted : T.warn
+                    return _jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 9px', borderRadius: 7, background: T.bg, border: `1px solid ${T.border}` }, children: [
+                      _jsx('span', { style: { width: 6, height: 6, borderRadius: '50%', background: execColor, flexShrink: 0 }, 'aria-hidden': true }),
+                      _jsx('span', { style: { color: execColor, fontSize: 11, fontWeight: 600, minWidth: 65 }, children: exec.result ? (RESULT_LABELS[exec.result] || exec.result) : 'Running' }),
+                      _jsx(EngineBadge, { engine: exec.engine || 'chat' }),
+                      _jsx('span', { style: { ...muted, fontSize: 10 }, children: duration(exec.started_at, exec.ended_at) }),
+                      (exec.session_key || exec.runner_id) && _jsx('button', { type: 'button', onClick: () => onOpenEngine(task, exec), style: { marginLeft: 'auto', border: 'none', background: 'transparent', color: T.accent, fontSize: 10, cursor: 'pointer', padding: 0 }, children: 'Open' }),
+                    ] }, exec.id)
+                  }) }),
+                ],
+              }),
+
+              task.activity?.length > 0 && _jsxs('section', {
+                'aria-label': 'Task activity', style: card, children: [
+                  _jsx('div', { style: { ...label, marginBottom: 10 }, children: 'Activity' }),
+                  _jsx('div', { style: { display: 'flex', flexDirection: 'column', gap: 0 }, children: [...task.activity].reverse().slice(0, 10).map(item => _jsxs('div', { style: { display: 'flex', gap: 9, padding: '0 0 10px', minHeight: 28 }, children: [
+                    _jsx('span', { style: { width: 7, height: 7, marginTop: 4, borderRadius: '50%', background: T.accent, flexShrink: 0 }, 'aria-hidden': true }),
+                    _jsxs('div', { style: { minWidth: 0 }, children: [
+                      _jsx('div', { style: { fontSize: 11, color: T.text }, children: item.summary }),
+                      _jsxs('div', { style: { fontSize: 10, color: T.muted, marginTop: 2 }, children: [item.kind.replaceAll('_', ' '), ' · ', relativeTime(item.at)] }),
+                    ] }),
+                  ] }, item.id)) }),
+                ],
+              }),
+
+              _jsxs('section', {
+                'aria-label': 'Task properties', style: card, children: [
+                  _jsx('div', { style: { ...label, marginBottom: 10 }, children: 'Properties' }),
+                  _jsxs('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }, children: [
+                    _jsxs('label', { style: { ...muted, display: 'block' }, children: [_jsx('span', { style: label, children: 'Assignee' }), _jsx('input', { 'aria-label': 'Assignee / owner', value: assignee, onChange: e => setAssignee(e.target.value), placeholder: 'Unassigned', style: { ...input, marginTop: 5 } })] }),
+                    _jsxs('div', { style: muted, children: [_jsx('div', { style: label, children: 'Priority' }), _jsx('div', { style: { marginTop: 8, color: task.priority === 'high' ? T.danger : T.text, fontSize: 12 }, children: task.priority || 'medium' })] }),
+                    _jsxs('div', { style: muted, children: [_jsx('div', { style: label, children: 'Created' }), _jsx('div', { style: { marginTop: 8, color: T.text, fontSize: 11 }, children: formatTime(task.created_at) })] }),
+                    _jsxs('div', { style: muted, children: [_jsx('div', { style: label, children: 'Tags' }), _jsx('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }, children: task.tags.length ? task.tags.map(tag => _jsx('span', { style: { background: T.bg, border: `1px solid ${T.border}`, borderRadius: 4, padding: '2px 6px', fontSize: 10, color: T.text }, children: tag }, tag)) : _jsx('span', { children: 'None' }) })] }),
+                  ] }),
+                  isDirty && _jsx('button', { type: 'button', onClick: save, style: { ...pill, width: '100%', marginTop: 12, background: T.accent, color: '#fff' }, children: 'Save properties' }),
+                ],
+              }),
+
+              // Keep the source text available for audit/debugging without
+              // letting it dominate the page. Most visits need the outcome and
+              // activity, not a second copy of the create form.
+              _jsxs('details', {
+                style: { ...card, color: T.text }, children: [
+                  _jsx('summary', { style: { cursor: 'pointer', fontSize: 12, fontWeight: 600 }, children: 'Original request' }),
+                  _jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }, children: [
+                    task.description && _jsxs('div', { children: [_jsx('div', { style: label, children: 'Description' }), _jsx('p', { style: { ...muted, margin: '5px 0 0', whiteSpace: 'pre-wrap' }, children: task.description })] }),
+                    _jsxs('div', { children: [_jsx('div', { style: label, children: 'Prompt sent to engine' }), _jsx('p', { style: { ...muted, margin: '5px 0 0', whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, monospace', fontSize: 11 }, children: task.prompt })] }),
+                  ] }),
+                ],
+              }),
+            ],
+          }),
+
+          _jsxs('div', {
+            style: { display: 'flex', gap: 8, padding: '12px 20px', borderTop: `1px solid ${T.border}` },
+            children: [
+              !running ? _jsxs('button', { type: 'button', onClick: () => onRun(task), style: { ...pill, background: T.accent, color: '#fff' }, children: [task.executions.length ? _jsx(RotateCw, { size: 14 }) : _jsx(Play, { size: 14 }), task.executions.length ? 'Run again' : 'Run'] }) : _jsxs('span', { style: { ...muted, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 4px', color: T.warn }, children: [_jsx(Loader2, { size: 13, style: { animation: 'kanban-spin 1s linear infinite' } }), 'Running…'] }),
+              _jsxs('button', { type: 'button', onClick: () => { if (confirmDelete) onDelete(task.id); else setConfirmDelete(true) }, style: { ...pill, marginLeft: 'auto', background: 'rgba(239,68,68,0.12)', color: T.danger }, children: [_jsx(Trash2, { size: 14 }), confirmDelete ? 'Really delete?' : 'Delete'] }),
+            ],
+          }),
+          confirmDiscard && _jsxs('div', { role: 'alertdialog', 'aria-label': 'Unsaved changes', style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 20px', borderTop: `1px solid ${T.border}`, background: 'rgba(234,179,8,0.08)' }, children: [
+            _jsx('span', { style: { flex: 1, fontSize: 12, color: T.text }, children: 'You have unsaved edits. Discard them?' }),
+            _jsx('button', { type: 'button', onClick: () => setConfirmDiscard(false), style: { ...pill, padding: '6px 10px', background: T.hover, color: T.text }, children: 'Keep editing' }),
+            _jsx('button', { type: 'button', onClick: onClose, style: { ...pill, padding: '6px 10px', background: 'rgba(239,68,68,0.12)', color: T.danger }, children: 'Discard' }),
+          ] }),
         ],
       }),
     ],
@@ -1002,11 +1288,11 @@ export default function KanbanApp() {
 
   return _jsxs('div', {
     style: {
-      display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden',
+      display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0, height: '100%', overflow: 'hidden', position: 'relative',
       color: T.text, fontSize: 14,
     },
     children: [
-      _jsx('style', { children: '@keyframes kanban-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }' }),
+      _jsx('style', { children: '@keyframes kanban-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } } @keyframes kanban-drawer-in { from { transform: translateX(100%) } to { transform: translateX(0) } } @media (prefers-reduced-motion: reduce) { * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; } }' }),
       // Header
       _jsxs('div', {
         style: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', padding: '16px 16px 12px' },
@@ -1117,7 +1403,7 @@ export default function KanbanApp() {
       }),
       // Board
       _jsx('div', {
-        style: { flex: 1, overflow: 'auto', padding: '0 16px 16px' },
+        style: { flex: 1, minWidth: 0, overflow: 'auto', padding: '0 16px 16px' },
         children: loading
           ? _jsx('div', {
               style: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' },

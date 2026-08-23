@@ -76,7 +76,7 @@ _WATCH_TIMEOUT_SECS = 30 * 60
 #: attached the key is gone — and cancelling it is what frees the card.
 _SESSION_ATTACH_GRACE_SECS = 120
 
-_STORE_VERSION = 1
+_STORE_VERSION = 2
 
 
 class BoardUnreadableError(RuntimeError):
@@ -126,6 +126,17 @@ class ExecutionRecord:
     error: str | None = None
     engine: str = "chat"
     runner_id: str | None = None
+    progress: str | None = None
+    progress_detail: str | None = None
+
+
+@dataclass
+class ActivityRecord:
+    id: str
+    at: float
+    kind: str
+    summary: str
+    execution_id: str | None = None
 
 
 @dataclass
@@ -151,6 +162,13 @@ class TaskRecord:
     # engine selected for the latest execution, if the card has been run.
     engine: str = "auto"
     active_engine: str | None = None
+    assignee: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+    activity: list[ActivityRecord] = field(default_factory=list)
+
+
+def _activity(task: TaskRecord, kind: str, summary: str, execution_id: str | None = None) -> list[ActivityRecord]:
+    return [*task.activity, ActivityRecord(str(uuid.uuid4()), time.time(), kind, summary[:240], execution_id)][-200:]
 
 
 # ── Pure State Transitions ──
@@ -180,6 +198,7 @@ def create_task(
         priority=priority if priority in ("low", "medium", "high") else "medium",
         refining=refining,
         engine=engine if engine in TASK_ENGINES else "auto",
+        activity=[ActivityRecord(str(uuid.uuid4()), now, "created", "Task created")],
     )
 
 
@@ -201,6 +220,8 @@ def move_task(task: TaskRecord, new_status: str) -> TaskRecord:
         refining=task.refining,
         engine=task.engine,
         active_engine=task.active_engine,
+        assignee=task.assignee, metadata=task.metadata,
+        activity=_activity(task, "moved", f"Moved to {new_status}"),
     )
 
 
@@ -224,6 +245,8 @@ def start_execution(task: TaskRecord, engine: str) -> tuple[TaskRecord, Executio
         refining=task.refining,
         engine=task.engine,
         active_engine=engine,
+        assignee=task.assignee, metadata=task.metadata,
+        activity=_activity(task, "run_started", f"Started {engine} execution", execution.id),
     )
     return new_task, execution
 
@@ -268,6 +291,8 @@ def settle_execution(
                     error=error,
                     engine=ex.engine,
                     runner_id=ex.runner_id,
+                    progress=ex.progress,
+                    progress_detail=ex.progress_detail,
                 )
             )
         else:
@@ -287,6 +312,8 @@ def settle_execution(
         refining=task.refining,
         engine=task.engine,
         active_engine=task.active_engine,
+        assignee=task.assignee, metadata=task.metadata,
+        activity=_activity(task, "run_settled", f"Execution {outcome}", execution_id),
     )
 
 
@@ -305,6 +332,8 @@ def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) ->
                     error=ex.error,
                     engine=ex.engine,
                     runner_id=ex.runner_id,
+                    progress=ex.progress,
+                    progress_detail=ex.progress_detail,
                 )
             )
         else:
@@ -324,6 +353,7 @@ def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) ->
         refining=task.refining,
         engine=task.engine,
         active_engine=task.active_engine,
+        assignee=task.assignee, metadata=task.metadata, activity=task.activity,
     )
 
 
@@ -342,6 +372,8 @@ def attach_runner_id(task: TaskRecord, execution_id: str, runner_id: str) -> Tas
                     error=ex.error,
                     engine=ex.engine,
                     runner_id=runner_id,
+                    progress=ex.progress,
+                    progress_detail=ex.progress_detail,
                 )
             )
         else:
@@ -361,6 +393,7 @@ def attach_runner_id(task: TaskRecord, execution_id: str, runner_id: str) -> Tas
         refining=task.refining,
         engine=task.engine,
         active_engine=task.active_engine,
+        assignee=task.assignee, metadata=task.metadata, activity=task.activity,
     )
 
 
@@ -418,6 +451,8 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             session_key = ex_raw.get("session_key")
             execution_engine = ex_raw.get("engine", "chat")
             runner_id = ex_raw.get("runner_id")
+            progress = ex_raw.get("progress")
+            progress_detail = ex_raw.get("progress_detail")
             if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
                 raise BoardUnreadableError("board.json has an execution with a non-numeric start")
             if ended_at is not None and (
@@ -434,6 +469,10 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                 raise BoardUnreadableError("board.json has an execution with an unknown engine")
             if runner_id is not None and not isinstance(runner_id, str):
                 raise BoardUnreadableError("board.json has an execution with a non-string runner id")
+            if progress is not None and not isinstance(progress, str):
+                raise BoardUnreadableError("board.json has an execution with a non-string progress")
+            if progress_detail is not None and not isinstance(progress_detail, str):
+                raise BoardUnreadableError("board.json has an execution with a non-string progress detail")
             executions.append(
                 ExecutionRecord(
                     id=ex_id,
@@ -444,6 +483,8 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                     error=error,
                     engine=execution_engine,
                     runner_id=runner_id,
+                    progress=progress,
+                    progress_detail=progress_detail,
                 )
             )
 
@@ -457,6 +498,23 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             raise BoardUnreadableError("board.json has a task with an unknown engine")
         if active_engine is not None and active_engine not in EXECUTION_ENGINES:
             raise BoardUnreadableError("board.json has a task with an unknown active engine")
+
+        assignee = raw.get("assignee")
+        metadata = raw.get("metadata", {})
+        activity_raw = raw.get("activity", [])
+        if assignee is not None and not isinstance(assignee, str):
+            raise BoardUnreadableError("board.json has a task with a non-string assignee")
+        if not isinstance(metadata, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in metadata.items()):
+            raise BoardUnreadableError("board.json has metadata that is not a string map")
+        if not isinstance(activity_raw, list):
+            raise BoardUnreadableError("board.json has activity that is not an array")
+        activity = []
+        for item in activity_raw:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("at"), (int, float)) or not isinstance(item.get("kind"), str) or not isinstance(item.get("summary"), str):
+                raise BoardUnreadableError("board.json has malformed activity")
+            if item.get("execution_id") is not None and not isinstance(item.get("execution_id"), str):
+                raise BoardUnreadableError("board.json has malformed activity execution id")
+            activity.append(ActivityRecord(item["id"], float(item["at"]), item["kind"], item["summary"], item.get("execution_id")))
 
         return TaskRecord(
             id=task_id,
@@ -479,6 +537,9 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             refining=raw.get("refining") is True,
             engine=engine,
             active_engine=active_engine,
+            assignee=assignee,
+            metadata=metadata,
+            activity=activity[-200:],
         )
     except BoardUnreadableError:
         logger.error("kanban: refusing to read board.json: task %s is invalid", task_id)
@@ -1027,6 +1088,9 @@ async def _name_task_in_background(
             refining=False,
             engine=task.engine,
             active_engine=task.active_engine,
+            assignee=task.assignee,
+            metadata=task.metadata,
+            activity=_activity(task, "refined", "Task title refined"),
         )
 
     if cancelled is not None:
@@ -1078,6 +1142,12 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
             _tags_field(body)
         if "engine" in body:
             _engine_field(body)
+        if "assignee" in body:
+            _str_field(body, "assignee", default="")
+        if "metadata" in body:
+            metadata = body["metadata"]
+            if not isinstance(metadata, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in metadata.items()):
+                raise _BadRequest("metadata must be an object of strings", "metadata_invalid")
     except _BadRequest as bad:
         return bad.response()
 
@@ -1099,6 +1169,8 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
         tags = body.get("tags", task.tags)
         priority = body.get("priority", task.priority)
         engine = body.get("engine", task.engine)
+        assignee = body.get("assignee", task.assignee)
+        metadata = body.get("metadata", task.metadata)
 
         return TaskRecord(
             id=task.id,
@@ -1117,6 +1189,9 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
             refining=False if "title" in body or "description" in body else task.refining,
             engine=engine if engine in TASK_ENGINES else task.engine,
             active_engine=task.active_engine,
+            assignee=assignee if isinstance(assignee, str) else task.assignee,
+            metadata=metadata if isinstance(metadata, dict) else task.metadata,
+            activity=_activity(task, "edited", "Task details updated"),
         )
 
     result = await asyncio.to_thread(store.update_task, task_id, updater)

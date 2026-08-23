@@ -103,8 +103,10 @@ check("appears in list", tid in ids)
 s, _ = call("POST", f"/api/apps/kanban/tasks/{tid}/move", {"status": "backlog"})
 check("move -> 200", s == 200, f"status={s}")
 
-s, _ = call("PATCH", f"/api/apps/kanban/tasks/{tid}", {"prompt": "CI smoke task (edited)"})
+s, body = call("PATCH", f"/api/apps/kanban/tasks/{tid}", {"prompt": "CI smoke task (edited)", "assignee": "CI", "metadata": {"source": "smoke"}})
 check("patch -> 200", s == 200, f"status={s}")
+check("assignee persists", body.get("assignee") == "CI" if isinstance(body, dict) else False)
+check("metadata persists", body.get("metadata") == {"source": "smoke"} if isinstance(body, dict) else False)
 
 s, body = call("POST", "/api/apps/kanban/reconcile", {})
 check("reconcile -> 200", s == 200, f"status={s} {str(body)[:60]}")
