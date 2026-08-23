@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+from PIL import Image
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -106,7 +107,7 @@ with sync_playwright() as p:
     # page and intercept pointer events. Dismiss them before interacting.
     for _ in range(20):
         page.wait_for_timeout(500)
-        skip_all = page.get_by_text("Skip all", exact=True)
+        skip_all = page.get_by_role("button", name="Skip all", exact=True)
         if skip_all.count() > 0 and skip_all.first.is_visible():
             skip_all.first.click()
             continue
@@ -161,7 +162,31 @@ with sync_playwright() as p:
     detail = page.get_by_role("dialog", name="Task detail")
     expect(detail).to_be_visible(timeout=15000)
     expect(detail.get_by_text("Chat", exact=True)).to_be_visible(timeout=15000)
+    # The drawer leads with issue-like state and next actions. The raw prompt
+    # remains collapsed context instead of taking over the primary layout.
+    expect(detail.get_by_text("Not started", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Properties", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Original request", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Execution prompt", exact=True)).not_to_be_visible()
+    # The drawer intentionally animates in; assert its final geometry after
+    # the transition instead of sampling the panel halfway through the slide.
+    page.wait_for_timeout(250)
+    drawer_box = detail.bounding_box()
+    viewport = page.evaluate("() => ({ innerWidth: window.innerWidth, clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth })")
+    print(f"drawer geometry: box={drawer_box} viewport={viewport}")
+    assert drawer_box and drawer_box["x"] >= 0 and drawer_box["x"] + drawer_box["width"] <= viewport["innerWidth"] + 1, (
+        f"task detail drawer escapes viewport: box={drawer_box} viewport={viewport}"
+    )
     page.screenshot(path=str(OUT / "05-task-detail-before-run.png"), full_page=True)
+    # The side page has two independent dismissal paths and must preserve the board.
+    page.keyboard.press("Escape")
+    expect(detail).not_to_be_visible(timeout=5000)
+    task_card.click()
+    detail = page.get_by_role("dialog", name="Task detail")
+    page.get_by_role("button", name="Close task detail").click()
+    expect(detail).not_to_be_visible(timeout=5000)
+    task_card.click()
+    detail = page.get_by_role("dialog", name="Task detail")
 
     # Step 4: run from the detail view. This creates a real named dashboard
     # session; it is not a hidden/background-only execution.
@@ -206,11 +231,22 @@ with sync_playwright() as p:
     final_card.click()
     detail = page.get_by_role("dialog", name="Task detail")
     expect(detail).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Succeeded", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_label("Current execution").get_by_text("Succeeded", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Execution history", exact=True)).to_be_visible(timeout=15000)
     expect(detail.get_by_role("button", name="Open agent session")).to_be_visible(
         timeout=15000
     )
     page.screenshot(path=str(OUT / "09-completed-task-detail.png"), full_page=True)
+
+    # Evidence GIF is generated from this exact successful journey and remains
+    # in the workflow artifact directory, never in the repository.
+    gif_frames = []
+    for index in range(4):
+        frame_path = OUT / f"gif-{index}.png"
+        page.screenshot(path=str(frame_path), full_page=True)
+        gif_frames.append(Image.open(frame_path).convert("RGB"))
+        page.wait_for_timeout(250)
+    gif_frames[0].save(OUT / "kanban-task-detail-journey.gif", save_all=True, append_images=gif_frames[1:], duration=250, loop=0)
 
     # Step 7: after completion, the session action still opens the same chat
     # transcript rather than a new feature-specific detail page.

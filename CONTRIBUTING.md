@@ -14,38 +14,37 @@ run, and the review evidence must come from that exact run. The Playwright
 journey is part of the review surface: it should show the user path, not only a
 unit or API check.
 
-### Evidence lives in the workflow run, never in the repository
+### Evidence is committed under `docs/e2e` for now
 
 The `E2E / e2e` job uploads every frame it captures as the `e2e-evidence`
-artifact. That artifact is the evidence store. A pull request describes what the
-journey covered and links the run; it does not carry a copy of the frames into
-git.
+artifact. For now, the passing GIF and PNG frames are also copied into
+`docs/e2e/<pr-number>/` so the pull request can display them through raw GitHub
+URLs. This is a temporary compromise until a durable PR attachment/evidence
+publisher is adopted.
 
-**Never commit screenshots, GIFs, or videos to this repository.** This is
-enforced by `.github/ci/static_checks.py`, which fails the build on a tracked
-image or video file outside `ui/`. Three reasons it is not negotiable:
+Do not place screenshots, GIFs, or videos anywhere else in the repository. The
+static check allows media only under `ui/` (shipped product assets) or
+`docs/e2e/` (review evidence). Keep the evidence directory scoped to the PR
+number and use frames from the exact successful E2E run.
 
-1. This repository is an installable KiroCrew app. `kirocrew app install` copies
-   the whole app directory into `~/.kiro/crew/apps/kanban/`, so committed
-   screenshots ship to every user who installs the board.
-2. Evidence accumulates and cannot be reclaimed. Deleting a committed PNG leaves
-   the blob in history forever, so the clone cost is permanent.
-3. Raw links into a PR branch break on merge. The branch is deleted, the raw
-   URL 404s, and the gallery the reviewer approved is gone — which is exactly
-   what happened to the inline images in pull requests #1 and #2.
+This remains temporary because:
 
-If a reviewer wants images inline in the description, upload them through the
-GitHub web editor (drag and drop into the description box). GitHub stores them
-on its own attachment host, outside the repository, and the link survives branch
-deletion. Only a human can do this upload; an agent links the artifact instead.
+1. Committed evidence increases clone and install size. This repository is an
+   installable KiroCrew app, and `kirocrew app install` copies the whole app
+   directory into `~/.kiro/crew/apps/kanban/`.
+2. Evidence accumulates in git history even after old files are deleted.
+3. Raw links to a PR branch can break after that branch is deleted.
 
 ### Before requesting review
 
 1. Wait for the `E2E / e2e` workflow to finish successfully.
-2. Link that exact successful run in the description.
-3. Describe the journey the run exercised, naming each path it covered — for an
+2. Copy the exact successful run's PNG frames into `docs/e2e/<pr-number>/` and
+   generate the review GIF there.
+3. Embed the GIF/PNG gallery using raw URLs from the PR branch, and link that
+   exact successful run in the description.
+4. Describe the journey the run exercised, naming each path it covered — for an
    engine-routing change, that means Chat, Task Runner, and Autopilot.
-4. Call out any known limitation or path that is not covered.
+5. Call out any known limitation or path that is not covered.
 
 Required PR description checklist:
 
@@ -53,7 +52,9 @@ Required PR description checklist:
 - [ ] The successful workflow run is linked, so its `e2e-evidence` artifact is
       one click away.
 - [ ] The description names the user paths the journey covered, end to end.
-- [ ] No screenshot, GIF, or video is added to the repository.
+- [ ] GIF and PNG frames from that exact run are under
+      `docs/e2e/<pr-number>/`.
+- [ ] The GIF and PNG gallery is embedded in the description.
 - [ ] Any known limitation or failed path is called out explicitly.
 
 Do not describe evidence as passing unless it comes from a successful E2E run.
