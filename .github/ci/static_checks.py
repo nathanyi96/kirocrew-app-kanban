@@ -69,7 +69,9 @@ if errors:
         print(f"  ERROR: {e}")
     sys.exit(1)
 
-py_compile.compile(str(ROOT / "backend" / "routes.py"), doraise=True)
+for backend_file in sorted((ROOT / "backend").rglob("*.py")):
+    if "__pycache__" not in backend_file.parts:
+        py_compile.compile(str(backend_file), doraise=True)
 
 evidence = check_no_unscoped_media()
 if evidence:

@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import json
 import logging
+import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -49,6 +51,114 @@ from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+try:
+    from .models import ExecutionRecord, TaskRecord
+except ImportError:
+    _models_path = Path(__file__).with_name("models.py")
+    _models_spec = importlib.util.spec_from_file_location("_kanban_models", _models_path)
+    if _models_spec is None or _models_spec.loader is None:
+        raise ImportError(f"Could not load Kanban models: {_models_path}")
+    _models_module = importlib.util.module_from_spec(_models_spec)
+    # dataclasses resolves the defining module through sys.modules. KiroCrew's
+    # isolated hook loader does not register file-loaded modules for us.
+    sys.modules[_models_spec.name] = _models_module
+    _models_spec.loader.exec_module(_models_module)
+    ExecutionRecord = _models_module.ExecutionRecord
+    TaskRecord = _models_module.TaskRecord
+
+try:
+    from .services.chat_service import submit_feedback
+except ImportError:
+    # Gateway hook modules are loaded directly from a file under an isolated
+    # synthetic module name. Keep the feature module importable in that mode as
+    # well as through the normal package path used by CI and local tests.
+    _feedback_path = Path(__file__).with_name("services") / "chat_service.py"
+    _feedback_spec = importlib.util.spec_from_file_location("_kanban_chat_feedback", _feedback_path)
+    if _feedback_spec is None or _feedback_spec.loader is None:
+        raise ImportError(f"Could not load Kanban feedback service: {_feedback_path}")
+    _feedback_module = importlib.util.module_from_spec(_feedback_spec)
+    sys.modules[_feedback_spec.name] = _feedback_module
+    _feedback_spec.loader.exec_module(_feedback_module)
+    submit_feedback = _feedback_module.submit_feedback
+
+try:
+    from .services.engine_routing import (
+        resolve_engine as _resolve_engine_for_service,
+    )
+except ImportError:
+    _engine_path = Path(__file__).with_name("services") / "engine_routing.py"
+    _engine_spec = importlib.util.spec_from_file_location("_kanban_engine_routing", _engine_path)
+    if _engine_spec is None or _engine_spec.loader is None:
+        raise ImportError(f"Could not load Kanban engine service: {_engine_path}")
+    _engine_module = importlib.util.module_from_spec(_engine_spec)
+    sys.modules[_engine_spec.name] = _engine_module
+    _engine_spec.loader.exec_module(_engine_module)
+    _resolve_engine_for_service = _engine_module.resolve_engine
+
+try:
+    from .services.task_runner_service import (
+        task_runner_is_available as _task_runner_is_available,
+        task_runner_not_enabled_payload as _task_runner_not_enabled_payload,
+        task_runner_spec as _task_runner_spec,
+    )
+except ImportError:
+    _runner_path = Path(__file__).with_name("services") / "task_runner_service.py"
+    _runner_spec = importlib.util.spec_from_file_location("_kanban_task_runner_service", _runner_path)
+    if _runner_spec is None or _runner_spec.loader is None:
+        raise ImportError(f"Could not load Kanban Task Runner service: {_runner_path}")
+    _runner_module = importlib.util.module_from_spec(_runner_spec)
+    sys.modules[_runner_spec.name] = _runner_module
+    _runner_spec.loader.exec_module(_runner_module)
+    _task_runner_is_available = _runner_module.task_runner_is_available
+    _task_runner_not_enabled_payload = _runner_module.task_runner_not_enabled_payload
+    _task_runner_spec = _runner_module.task_runner_spec
+
+try:
+    from .services.task_service import (
+        attach_runner_id, attach_session_key, create_task, move_task,
+        settle_execution, start_execution,
+    )
+except ImportError:
+    _task_service_path = Path(__file__).with_name("services") / "task_service.py"
+    _task_service_spec = importlib.util.spec_from_file_location("_kanban_task_service", _task_service_path)
+    if _task_service_spec is None or _task_service_spec.loader is None:
+        raise ImportError(f"Could not load Kanban task service: {_task_service_path}")
+    _task_service_module = importlib.util.module_from_spec(_task_service_spec)
+    sys.modules[_task_service_spec.name] = _task_service_module
+    _task_service_spec.loader.exec_module(_task_service_module)
+    attach_runner_id = _task_service_module.attach_runner_id
+    attach_session_key = _task_service_module.attach_session_key
+    create_task = _task_service_module.create_task
+    move_task = _task_service_module.move_task
+    settle_execution = _task_service_module.settle_execution
+    start_execution = _task_service_module.start_execution
+
+try:
+    from .store import BoardStore
+except ImportError:
+    _store_path = Path(__file__).with_name("store.py")
+    _store_spec = importlib.util.spec_from_file_location("_kanban_store", _store_path)
+    if _store_spec is None or _store_spec.loader is None:
+        raise ImportError(f"Could not load Kanban store: {_store_path}")
+    _store_module = importlib.util.module_from_spec(_store_spec)
+    sys.modules[_store_spec.name] = _store_module
+    _store_spec.loader.exec_module(_store_module)
+    BoardStore = _store_module.BoardStore
+
+KanbanStore = BoardStore
+
+try:
+    from .serialization import task_to_dict as _task_to_dict
+except ImportError:
+    _serialization_path = Path(__file__).with_name("serialization.py")
+    _serialization_spec = importlib.util.spec_from_file_location("_kanban_serialization", _serialization_path)
+    if _serialization_spec is None or _serialization_spec.loader is None:
+        raise ImportError(f"Could not load Kanban serialization: {_serialization_path}")
+    _serialization_module = importlib.util.module_from_spec(_serialization_spec)
+    sys.modules[_serialization_spec.name] = _serialization_module
+    _serialization_spec.loader.exec_module(_serialization_module)
+    _task_to_dict = _serialization_module.task_to_dict
 
 logger = logging.getLogger("kirocrew.app.kanban")
 
@@ -115,7 +225,7 @@ EXECUTION_RESULTS = tuple(_RESULT_TO_STATUS)
 
 
 @dataclass
-class ExecutionRecord:
+class LegacyExecutionRecord:
     """One execution attempt of a task."""
 
     id: str
@@ -140,7 +250,7 @@ class ActivityRecord:
 
 
 @dataclass
-class TaskRecord:
+class LegacyTaskRecord:
     """A kanban board card."""
 
     id: str
@@ -174,7 +284,7 @@ def _activity(task: TaskRecord, kind: str, summary: str, execution_id: str | Non
 # ── Pure State Transitions ──
 
 
-def create_task(
+def LegacyCreateTask(
     title: str,
     description: str = "",
     prompt: str = "",
@@ -202,7 +312,7 @@ def create_task(
     )
 
 
-def move_task(task: TaskRecord, new_status: str) -> TaskRecord:
+def LegacyMoveTask(task: TaskRecord, new_status: str) -> TaskRecord:
     """Move a task to a new column. Returns a new record."""
     if new_status not in TASK_STATUSES:
         raise ValueError(f"Invalid status: {new_status!r}")
@@ -225,7 +335,7 @@ def move_task(task: TaskRecord, new_status: str) -> TaskRecord:
     )
 
 
-def start_execution(task: TaskRecord, engine: str) -> tuple[TaskRecord, ExecutionRecord]:
+def LegacyStartExecution(task: TaskRecord, engine: str) -> tuple[TaskRecord, ExecutionRecord]:
     """Begin a new execution. Returns (updated task, new execution record)."""
     if engine not in EXECUTION_ENGINES:
         raise ValueError(f"Invalid execution engine: {engine!r}")
@@ -251,7 +361,7 @@ def start_execution(task: TaskRecord, engine: str) -> tuple[TaskRecord, Executio
     return new_task, execution
 
 
-def settle_execution(
+def LegacySettleExecution(
     task: TaskRecord,
     execution_id: str,
     outcome: str,
@@ -317,7 +427,7 @@ def settle_execution(
     )
 
 
-def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) -> TaskRecord:
+def LegacyAttachSessionKey(task: TaskRecord, execution_id: str, session_key: str) -> TaskRecord:
     """Record which session is running an execution."""
     new_executions = []
     for ex in task.executions:
@@ -357,7 +467,7 @@ def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) ->
     )
 
 
-def attach_runner_id(task: TaskRecord, execution_id: str, runner_id: str) -> TaskRecord:
+def LegacyAttachRunnerId(task: TaskRecord, execution_id: str, runner_id: str) -> TaskRecord:
     """Record the Task Runner run id for an execution."""
     new_executions = []
     for ex in task.executions:
@@ -400,7 +510,7 @@ def attach_runner_id(task: TaskRecord, execution_id: str, runner_id: str) -> Tas
 # ── Serialization ──
 
 
-def _task_to_dict(task: TaskRecord) -> dict[str, Any]:
+def LegacyTaskToDict(task: TaskRecord) -> dict[str, Any]:
     """Serialize a task to a JSON-safe dict."""
     return asdict(task)
 
@@ -552,7 +662,7 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
 # ── File Store ──
 
 
-class KanbanStore:
+class LegacyKanbanStore:
     """File-backed kanban board store with advisory file locking.
 
     Storage layout::
@@ -714,7 +824,7 @@ def _board_file_lock(lock_path: Path):
 
 #: Set by ``register_routes`` before any dispatch; reset on app disable because
 #: the loader drops this module from ``sys.modules`` and re-executes it fresh.
-_STORE: KanbanStore | None = None
+_STORE: BoardStore | None = None
 
 
 def _get_store(ctx: Any) -> KanbanStore:
@@ -726,7 +836,7 @@ def _get_store(ctx: Any) -> KanbanStore:
     """
     global _STORE
     if _STORE is None:
-        _STORE = KanbanStore(Path(ctx.data_dir) / "board")
+        _STORE = BoardStore(Path(ctx.data_dir) / "board", from_dict=_task_from_dict, to_dict=_task_to_dict)
     return _STORE
 
 
@@ -1279,65 +1389,8 @@ async def api_kanban_tasks_move(request: web.Request, ctx: Any) -> web.Response:
 
 # ── Engine routing ──
 
-
 def _resolve_engine(preference: str, prompt: str) -> str:
-    """Resolve ``auto`` into a concrete engine.
-
-    Auto intentionally stays conservative: a short, single-intent request is a
-    normal Chat turn; explicit multi-step language or a longer structured
-    request goes to Task Runner. Autopilot remains an explicit choice because
-    it pauses for a human plan approval in its Chat session.
-    """
-    if preference in EXECUTION_ENGINES:
-        return preference
-    normalized = prompt.strip().lower()
-    complex_markers = (
-        "multi-step", "multiple steps", "step by step", "workflow", "pipeline",
-        "implement", "build", "refactor", "migrate", "research", "compare",
-        "deploy", "integration", "end to end", "e2e", "plan and", "then",
-    )
-    has_list = any(line.lstrip().startswith(('-', '*')) for line in prompt.splitlines())
-    numbered_steps = sum(1 for line in prompt.splitlines() if line.lstrip()[:2].rstrip('.').isdigit())
-    if len(prompt) > 280 or has_list or numbered_steps >= 2 or any(marker in normalized for marker in complex_markers):
-        return "task_runner"
-    return "chat"
-
-
-def _task_runner_spec(task: TaskRecord, prompt: str) -> str:
-    """Wrap a Kanban prompt in the inline spec accepted by Task Runner."""
-    return (
-        f"# {task.title}\n\n"
-        "## Goal\n"
-        f"{prompt.strip() or task.title}\n\n"
-        "## Steps\n"
-        "1. Work through the requested goal and any required sub-tasks.\n"
-        "2. Verify the result and summarize what was completed.\n"
-    )
-
-
-TASK_RUNNER_NOT_ENABLED_MESSAGE = (
-    "This task was classified for Task Runner, but Task Runner is not enabled "
-    "on this Host. Open Task Runner to enable it, then retry this task."
-)
-
-
-def _task_runner_is_available(state: Any) -> bool:
-    """Return whether this Host exposes a usable Task Runner instance."""
-    runner = getattr(state, "task_runner", None)
-    return runner is not None and callable(getattr(runner, "start_background", None))
-
-
-def _task_runner_not_enabled_payload() -> dict[str, Any]:
-    """Build the user-actionable response for a missing Task Runner."""
-    return {
-        "error": TASK_RUNNER_NOT_ENABLED_MESSAGE,
-        "code": "task_runner_not_enabled",
-        "engine": "task_runner",
-        "action": {
-            "label": "Open Task Runner",
-            "path": "/projects",
-        },
-    }
+    return _resolve_engine_for_service(preference, prompt, EXECUTION_ENGINES)
 
 
 async def _start_task_runner(
@@ -1508,6 +1561,29 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
             "status": "running",
         },
         status=202,
+    )
+
+
+@_require_enabled
+async def api_kanban_tasks_feedback(request: web.Request, ctx: Any) -> web.Response:
+    state = _get_state(request)
+    if state is None:
+        return web.json_response(
+            {"error": "This gateway does not expose chat sessions to apps", "code": "chat_unavailable"},
+            status=503,
+        )
+    return await submit_feedback(
+        request,
+        ctx,
+        store=_get_store(ctx),
+        state=state,
+        read_object_body=_read_object_body,
+        str_field=_str_field,
+        start_execution=start_execution,
+        attach_session_key=attach_session_key,
+        settle_execution=settle_execution,
+        run_chat=_capped_run_chat,
+        watch_execution=_watch_execution,
     )
 
 
@@ -2004,5 +2080,6 @@ def register_routes(ctx: Any) -> list[AppRoute]:
         AppRoute("DELETE", "/tasks/{id}", api_kanban_tasks_delete),
         AppRoute("POST", "/tasks/{id}/move", api_kanban_tasks_move),
         AppRoute("POST", "/tasks/{id}/run", api_kanban_tasks_run),
+        AppRoute("POST", "/tasks/{id}/feedback", api_kanban_tasks_feedback),
         AppRoute("POST", "/reconcile", api_kanban_tasks_reconcile),
     ]

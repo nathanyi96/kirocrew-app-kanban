@@ -11,6 +11,7 @@ validation needs no in-process nonce), never by a login flow.
 
 import json
 import os
+import re
 import sys
 import time
 from PIL import Image
@@ -133,14 +134,15 @@ with sync_playwright() as p:
     # Step 2: use the actual New task form, rather than creating the card via
     # the API as the smoke test does.
     page.get_by_role("button", name="New task", exact=True).click()
-    expect(page.locator("#kanban-new-prompt")).to_be_visible(timeout=15000)
+    prompt_box = page.get_by_placeholder("What do you want done?")
+    expect(prompt_box).to_be_visible(timeout=15000)
     page.screenshot(path=str(OUT / "03-new-task-form.png"), full_page=True)
 
     prompt = "Create an E2E journey proof task and report the result."
-    page.locator("#kanban-new-prompt").fill(prompt)
+    prompt_box.fill(prompt)
     # Keep this evidence path deterministic: it proves the Chat route while
     # the separate engine contract smoke covers selecting Task Runner.
-    page.locator("#kanban-new-engine").select_option("chat")
+    page.get_by_role("combobox").select_option("chat")
     with page.expect_response(
         lambda response: response.request.method == "POST"
         and response.url.endswith("/api/apps/kanban/tasks")
@@ -148,7 +150,7 @@ with sync_playwright() as p:
         page.get_by_role("button", name="Create task", exact=True).click()
     created = create_response.value.json()
     task_id = created["id"]
-    expect(page.locator("#kanban-new-prompt")).not_to_be_visible(timeout=15000)
+    expect(prompt_box).not_to_be_visible(timeout=15000)
 
     # The new card is newest and therefore first in the To do column. Selecting
     # the card shape instead of its title keeps this stable while the background
@@ -164,10 +166,13 @@ with sync_playwright() as p:
     expect(detail.get_by_text("Chat", exact=True)).to_be_visible(timeout=15000)
     # The drawer leads with issue-like state and next actions. The raw prompt
     # remains collapsed context instead of taking over the primary layout.
-    expect(detail.get_by_text("Not started", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Properties", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Original request", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Execution prompt", exact=True)).not_to_be_visible()
+    expect(detail.get_by_text("Ready", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("textbox", name="Title")).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("textbox", name="Description")).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("textbox", name="Execution prompt")).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Activity", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Artifacts", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("textbox", name="Reply to agent")).to_be_visible(timeout=15000)
     # The drawer intentionally animates in; assert its final geometry after
     # the transition instead of sampling the panel halfway through the slide.
     page.wait_for_timeout(250)
@@ -183,7 +188,7 @@ with sync_playwright() as p:
     expect(detail).not_to_be_visible(timeout=5000)
     task_card.click()
     detail = page.get_by_role("dialog", name="Task detail")
-    page.get_by_role("button", name="Close task detail").click()
+    detail.get_by_role("button", name="Close", exact=True).click()
     expect(detail).not_to_be_visible(timeout=5000)
     task_card.click()
     detail = page.get_by_role("dialog", name="Task detail")
@@ -200,10 +205,10 @@ with sync_playwright() as p:
 
     # Step 5: follow the live session link from the running card into KiroCrew
     # chat and prove the original prompt is present in that transcript.
-    expect(page.get_by_role("button", name="Open agent session")).to_be_visible(
+    expect(page.get_by_role("button", name="Open the chat")).to_be_visible(
         timeout=15000
     )
-    page.get_by_role("button", name="Open agent session").click()
+    page.get_by_role("button", name="Open the chat").click()
     page.wait_for_url("**/chat?sid=*", timeout=15000)
     expect(page.get_by_role("textbox", name="Message input")).to_be_visible(timeout=15000)
     expect(page.locator("body")).to_contain_text(prompt, timeout=15000)
@@ -231,9 +236,9 @@ with sync_playwright() as p:
     final_card.click()
     detail = page.get_by_role("dialog", name="Task detail")
     expect(detail).to_be_visible(timeout=15000)
-    expect(detail.get_by_label("Current execution").get_by_text("Succeeded", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Execution history", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_role("button", name="Open agent session")).to_be_visible(
+    expect(detail.get_by_text("Succeeded", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text(re.compile(r"Runs \(\d+\)"))).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("button", name="Open the chat")).to_be_visible(
         timeout=15000
     )
     page.screenshot(path=str(OUT / "09-completed-task-detail.png"), full_page=True)
@@ -250,7 +255,7 @@ with sync_playwright() as p:
 
     # Step 7: after completion, the session action still opens the same chat
     # transcript rather than a new feature-specific detail page.
-    detail.get_by_role("button", name="Open agent session").click()
+    detail.get_by_role("button", name="Open the chat").click()
     page.wait_for_url("**/chat?sid=*", timeout=15000)
     expect(page.get_by_role("textbox", name="Message input")).to_be_visible(timeout=15000)
     expect(page.locator("body")).to_contain_text(prompt, timeout=15000)
@@ -264,9 +269,10 @@ with sync_playwright() as p:
     def create_ui_task(task_prompt: str, engine: str) -> dict:
         open_kanban()
         page.get_by_role("button", name="New task", exact=True).click()
-        expect(page.locator("#kanban-new-prompt")).to_be_visible(timeout=15000)
-        page.locator("#kanban-new-prompt").fill(task_prompt)
-        page.locator("#kanban-new-engine").select_option(engine)
+        prompt_box = page.get_by_placeholder("What do you want done?")
+        expect(prompt_box).to_be_visible(timeout=15000)
+        prompt_box.fill(task_prompt)
+        page.get_by_role("combobox").select_option(engine)
         with page.expect_response(
             lambda response: response.request.method == "POST"
             and response.url.endswith("/api/apps/kanban/tasks")
@@ -307,11 +313,11 @@ with sync_playwright() as p:
     task_runner_card = page.locator("[role=\"button\"]").filter(has_text=task_runner_prompt).first
     task_runner_card.click()
     task_runner_detail = page.get_by_role("dialog", name="Task detail")
-    expect(task_runner_detail.get_by_role("button", name="Open Task Runner")).to_be_visible(
+    expect(task_runner_detail.get_by_role("button", name="Open the task runner")).to_be_visible(
         timeout=15000
     )
     page.screenshot(path=str(OUT / "12-task-runner-running.png"), full_page=True)
-    task_runner_detail.get_by_role("button", name="Open Task Runner").click()
+    task_runner_detail.get_by_role("button", name="Open the task runner").click()
     page.wait_for_url("**/projects*", timeout=15000)
     expect(page.locator("body")).to_contain_text("Task Runner", timeout=15000)
     page.screenshot(path=str(OUT / "13-task-runner-host.png"), full_page=True)
@@ -358,11 +364,11 @@ with sync_playwright() as p:
     autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
     autopilot_card.click()
     autopilot_detail = page.get_by_role("dialog", name="Task detail")
-    expect(autopilot_detail.get_by_role("button", name="Open agent session")).to_be_visible(
+    expect(autopilot_detail.get_by_role("button", name="Open the chat")).to_be_visible(
         timeout=15000
     )
     page.screenshot(path=str(OUT / "15-autopilot-running.png"), full_page=True)
-    autopilot_detail.get_by_role("button", name="Open agent session").click()
+    autopilot_detail.get_by_role("button", name="Open the chat").click()
     page.wait_for_url("**/chat?sid=*", timeout=15000)
     expect(page.get_by_role("textbox", name="Message input")).to_be_visible(timeout=15000)
     expect(page.locator("body")).to_contain_text("Autopilot", timeout=15000)
