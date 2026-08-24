@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "id": "swe-bench-verified-smoke-v1",
+      "benchmark": "swebench",
+      "dataset": "SWE-bench/SWE-bench_Verified",
+      "revision": "78f471bf655a3137b2e8a75af1501690ec009ec3",
+      "split": "test",
+      "task_ids": [
+        "django__django-11099",
+        "pytest-dev__pytest-7982",
+        "pallets__flask-5014",
+        "psf__requests-1142",
+        "sphinx-doc__sphinx-8721",
+        "sympy__sympy-20916"
+      ],
+      "limits": {
+        "attempts": 1,
+        "timeout_seconds": 1800,
+        "workers": 2
+      },
+      "source_url": "https://github.com/SWE-bench/SWE-bench",
+      "license": "MIT; individual task repositories retain their own licenses",
+      "selection": "Six human-verified, short-difficulty tasks across web, testing, HTTP, documentation, and symbolic-math repositories."
+    },
+    {
+      "id": "featurebench-lite-smoke-v1",
+      "benchmark": "featurebench",
+      "dataset": "LiberCoders/FeatureBench",
+      "revision": "76b4a4566e04f4bcc13c35125d4f301791efa736",
+      "split": "lite",
+      "task_ids": [
+        "pydantic__pydantic.e1dcaf9e.test_deprecated_fields.40a2ec54.lv1",
+        "sympy__sympy.c1097516.test_nullspace.f14fc970.lv1",
+        "mwaskom__seaborn.7001ebe7.test_algorithms.1f0181c2.lv1",
+        "sphinx-doc__sphinx.e347e59c.test_domain_c.4068b9e8.lv1"
+      ],
+      "limits": {
+        "attempts": 1,
+        "timeout_seconds": 1800,
+        "workers": 2
+      },
+      "source_url": "https://github.com/LiberCoders/FeatureBench",
+      "license": "MIT; individual task repositories retain their own licenses",
+      "selection": "Four CPU-oriented level-1 tasks from the official lite split, spanning validation, symbolic math, visualization, and documentation tooling."
+    }
+  ]
+}

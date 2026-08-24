@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 
@@ -53,6 +54,47 @@ def task_runner_spec(task: Any, prompt: str) -> str:
 def task_runner_is_available(state: Any) -> bool:
     runner = getattr(state, "task_runner", None)
     return runner is not None and callable(getattr(runner, "start_background", None))
+
+
+def task_runner_start_kwargs(task: Any, start_background: Any) -> dict[str, Any]:
+    """Build Host Task Runner options, including an optional prepared workspace.
+
+    External benchmark adapters put ``workspace_dir`` in task metadata. Keeping
+    it there avoids adding benchmark-only state to the product model while still
+    making the workspace durable and visible in the task JSON. Older Host builds
+    did not expose this public argument, so fail with a useful compatibility
+    error instead of silently running the benchmark against the wrong checkout.
+    """
+    options: dict[str, Any] = {
+        "name": task.title,
+        "source": "dashboard",
+        "auto_approve": False,
+    }
+    metadata = getattr(task, "metadata", {})
+    workspace_dir = (
+        str(metadata.get("workspace_dir", "")).strip()
+        if isinstance(metadata, dict)
+        else ""
+    )
+    if not workspace_dir:
+        return options
+
+    try:
+        parameters = inspect.signature(start_background).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    supports_workspace = any(
+        parameter.name == "workspace_dir"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    if not supports_workspace:
+        raise RuntimeError(
+            "This KiroCrew Host cannot run a task in a prepared workspace; "
+            "upgrade KiroCrew before running external evals"
+        )
+    options["workspace_dir"] = workspace_dir
+    return options
 
 
 TASK_RUNNER_NOT_ENABLED_MESSAGE = (

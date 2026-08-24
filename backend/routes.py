@@ -117,6 +117,7 @@ try:
     from .services.task_runner_service import (
         task_runner_is_available as _task_runner_is_available,
         task_runner_not_enabled_payload as _task_runner_not_enabled_payload,
+        task_runner_start_kwargs as _task_runner_start_kwargs,
         task_runner_spec as _task_runner_spec,
     )
 except ImportError:
@@ -129,6 +130,7 @@ except ImportError:
     _runner_spec.loader.exec_module(_runner_module)
     _task_runner_is_available = _runner_module.task_runner_is_available
     _task_runner_not_enabled_payload = _runner_module.task_runner_not_enabled_payload
+    _task_runner_start_kwargs = _runner_module.task_runner_start_kwargs
     _task_runner_spec = _runner_module.task_runner_spec
 
 try:
@@ -1346,6 +1348,14 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         tags = _tags_field(body)
         engine = _engine_field(body)
         goal = _goal_field(body, objective=prompt or title)
+        metadata = body.get("metadata", {})
+        if not isinstance(metadata, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in metadata.items()
+        ):
+            raise _BadRequest(
+                "metadata must be an object of strings", "metadata_invalid"
+            )
     except _BadRequest as bad:
         return bad.response()
 
@@ -1376,6 +1386,7 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         refining=name_in_background,
         engine="task_runner" if goal is not None and goal.mode == "loop" else engine,
         goal=goal,
+        metadata=metadata,
     )
     await asyncio.to_thread(store.add_task, task)
     if name_in_background:
@@ -1656,9 +1667,7 @@ async def _start_task_runner(
     atomic_write(spec_path, _task_runner_spec(task, prompt_text))
     runner_id = await runner.start_background(
         spec_path,
-        name=task.title,
-        source="dashboard",
-        auto_approve=False,
+        **_task_runner_start_kwargs(task, runner.start_background),
     )
     await asyncio.to_thread(
         store.update_task,

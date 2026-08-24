@@ -45,6 +45,7 @@ jobs:
       - name: Static checks (manifest schema, backend compile, UI parse)
         run: |
           python .github/ci/static_checks.py
+          python -m unittest discover -s tests -v
           cd ui
           npm ci
           npm run build
