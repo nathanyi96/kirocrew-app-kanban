@@ -1,9 +1,9 @@
 # Kanban — a task board for KiroCrew
 
-A board where **each card is a prompt an agent runs for you**. Say what you want
-in one field, choose an engine, and the board writes the card. Press Run and it
-starts the selected Host engine; opening the card takes you to the matching
-Chat, Task Runner, or Autopilot surface.
+A board where **each card is an outcome an agent works toward**. Say what you
+want, choose an engine, and the board writes the card. The detail drawer leads
+with the latest result, verification evidence, produced artifacts, and next
+actions; the full Chat or Task Runner remains one click away when you need it.
 
 Inspired by [dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui)'s task
 board, rebuilt on KiroCrew's own chat sessions and cron service.
@@ -13,6 +13,20 @@ board, rebuilt on KiroCrew's own chat sessions and cron service.
 - **One field to create.** You describe the task; the board derives a title and a
   short summary and drops the card in **To do** so you can look it over before it
   runs. Nothing runs until you say so.
+- **Outcome-first review.** The detail drawer opens on a concise result packet:
+  final summary, explicit checks and their evidence, durable outputs, risks, and
+  suggested next actions. Goal, Artifacts, Changes, and Audit stay one icon away.
+- **Bounded “Continue until verified”.** Opt into a Task Runner goal contract
+  with explicit acceptance criteria plus attempt, wall-clock, and token limits.
+  Successful reviewed steps complete the checks; approvals, repeated failures,
+  or exhausted limits pause the loop instead of running indefinitely.
+- **Inline correction.** Reply to a finished Chat turn or give the next Task
+  Runner attempt a corrective instruction directly from the drawer. The input
+  is disabled while an agent is already working, so one card cannot accidentally
+  start overlapping attempts.
+- **Durable evidence.** Links, paths, commits, branches, step summaries, and
+  verification evidence are projected from each execution and remain attached
+  to the task even after the live Host run disappears.
 - **Engine routing.** Choose **Chat** for a focused request, **Task Runner** for
   multi-step execution, or **Autopilot** when you want a plan-and-approval Chat
   session. **Auto** sends short requests to Chat and structured or multi-step
@@ -117,6 +131,7 @@ backend/
     execution_service.py  execution predicates/labels
     chat_service.py       continue an existing Chat slot from the board
     task_runner_service.py Task Runner integration helpers
+    outcome_service.py    goals, checkpoints, evidence, artifacts, result packets
     engine_routing.py     Auto engine selection
 ui/
   src/               multi-file React/ESM source
@@ -175,8 +190,10 @@ are externalized so the bundle uses the dashboard's React instance. Source is
 organized by responsibility under `ui/src/`: API client, domain constants,
 formatting, shared components, and the task-detail feature. Styling remains
 inline against theme tokens and dragging uses native HTML5 events. The board
-polls every 5s, which is how a card that settles in the background updates on
-its own.
+polls every 5s, which is how live checkpoints, evidence, and a card that settles
+in the background update on their own. The detail drawer is non-modal: opening
+it reserves space on the right instead of dimming the board, so another card
+remains directly selectable for fast comparison.
 
 Build locally with:
 
@@ -186,9 +203,9 @@ npm install
 npm run build
 ```
 
-Modals use `position: absolute` inside a `position: relative` root — an app UI
-mounts directly into the dashboard DOM, so `position: fixed` would cover the
-sidebar and header too.
+The task detail is intentionally a side page rather than a modal overlay. Create
+and confirmation flows remain modal because they require a single explicit
+decision before returning to the board.
 
 ## Requirements
 

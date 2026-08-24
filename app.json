@@ -1,15 +1,17 @@
 {
   "name": "kanban",
   "displayName": "Kanban",
-  "version": "2.2.0",
-  "description": "A task board that routes each card to Chat, Task Runner, or Autopilot and takes you to the live engine behind it.",
+  "version": "2.3.0",
+  "description": "An outcome-first agent task board with durable results, verification evidence, artifacts, and bounded goal loops.",
   "author": "nathanyi96",
   "license": "MIT",
   "tags": ["productivity", "tasks", "kanban", "automation", "agents"],
   "highlights": [
     "One field to create a task — the board writes the title and summary for you",
     "Choose Chat, Task Runner, Autopilot, or Auto routing when you create a card",
-    "Click a card to see its current engine and jump to the matching Host surface",
+    "Review the latest outcome, verification evidence, artifacts, and attempts without reading the full chat",
+    "Use Continue until verified for bounded Task Runner loops with attempt, time, and token limits",
+    "Reply to Chat or give the next Task Runner attempt a corrective instruction from the drawer",
     "Five columns with drag-and-drop, plus a tap-to-move path for touch screens",
     "A card settles itself when its agent turn ends — including across recoveries",
     "A run orphaned by a restart is reconciled on the next page load, not left stuck"

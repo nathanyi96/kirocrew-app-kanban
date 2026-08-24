@@ -19,6 +19,18 @@ export const ENGINE_OPTIONS = [
 
 export const ENGINE_LABELS = Object.fromEntries(ENGINE_OPTIONS.map(engine => [engine.id, engine.label]))
 
+export const GOAL_STATUS = {
+  ready: { label: 'Ready', tone: 'muted' },
+  working: { label: 'Working', tone: 'warn' },
+  needs_input: { label: 'Needs input', tone: 'warn' },
+  needs_review: { label: 'Needs review', tone: 'info' },
+  achieved: { label: 'Achieved', tone: 'ok' },
+  paused: { label: 'Paused', tone: 'muted' },
+  blocked: { label: 'Blocked', tone: 'danger' },
+  budget_exhausted: { label: 'Budget exhausted', tone: 'danger' },
+  cancelled: { label: 'Cancelled', tone: 'muted' },
+}
+
 const ACTIVITY_TITLES = {
   created: 'Task created',
   refined: 'Task clarified',
@@ -28,6 +40,8 @@ const ACTIVITY_TITLES = {
   run_started: 'Agent started a run',
   settled: 'Agent replied',
   run_settled: 'Agent replied',
+  goal_updated: 'Goal updated',
+  accepted: 'Outcome accepted',
 }
 
 const cleanLine = value => String(value || '')
@@ -82,7 +96,7 @@ const resourceName = url => {
 
 const resourceCategory = resource => {
   const value = `${resource.type || ''} ${resource.kind || ''} ${resource.title || ''} ${resource.url || resource.href || ''}`.toLowerCase()
-  if (/\b(diff|patch|change|commit)\b|\.(diff|patch)(?:$|[?#])/.test(value)) return 'changes'
+  if (/\b(diff|patch|change|commit|branch)\b|\.(diff|patch)(?:$|[?#])/.test(value)) return 'changes'
   if (/\b(markdown|note|readme)\b|\.md(?:$|[?#])/.test(value)) return 'notes'
   return 'files'
 }
@@ -147,6 +161,7 @@ export function taskArtifacts(task) {
 export function taskResourceGroups(task) {
   const all = taskArtifacts(task)
   return {
+    artifacts: all,
     files: all,
     changes: all.filter(resource => resource.category === 'changes'),
     notes: all.filter(resource => resource.category === 'notes'),
@@ -170,6 +185,16 @@ export function taskSteps(task, resources = taskArtifacts(task)) {
       artifacts: resources.filter(resource => resource.step_id === step.id),
     })
   }
+  const projected = (task.executions || []).flatMap(exec => Array.isArray(exec.steps)
+    ? exec.steps.map(step => ({
+      ...step,
+      engine: exec.engine,
+      started_at: exec.started_at,
+      ended_at: exec.ended_at,
+      artifacts: resources.filter(resource => resource.step_id === step.id || step.artifact_ids?.includes(resource.id)),
+    }))
+    : [])
+  if (projected.length) return projected
   return (task.executions || []).map((exec, index) => ({
     id: exec.id || `run-${index}`,
     title: `Run ${index + 1}`,
@@ -200,28 +225,101 @@ export function taskKeyPoints(task) {
 
 export function taskProgress(task) {
   const latest = task.executions?.[task.executions.length - 1]
+  const criteria = (task.goal?.criteria || task.result_packet?.verification || []).filter(check => check.required !== false)
+  if (criteria.length) {
+    const passed = criteria.filter(check => check.status === 'passed').length
+    return { percent: Math.round((passed / criteria.length) * 100), label: `${passed} of ${criteria.length} verified`, determinate: true }
+  }
+  const steps = Array.isArray(latest?.steps) ? latest.steps : []
+  if (steps.length) {
+    const complete = steps.filter(step => ['passed', 'skipped', 'completed', 'succeeded'].includes(step.status)).length
+    return { percent: Math.round((complete / steps.length) * 100), label: `${complete} of ${steps.length} checkpoints`, determinate: true }
+  }
   const raw = String(latest?.progress || task.progress || '')
   const fraction = raw.match(/(\d+)\s*(?:\/|of)\s*(\d+)/i)
   if (fraction && Number(fraction[2]) > 0) {
     const current = Number(fraction[1])
     const total = Number(fraction[2])
-    return { percent: Math.min(100, Math.round((current / total) * 100)), label: `${current} of ${total}` }
+    return { percent: Math.min(100, Math.round((current / total) * 100)), label: `${current} of ${total}`, determinate: true }
   }
   const percentage = raw.match(/(\d{1,3})\s*%/)
   if (percentage) {
     const percent = Math.min(100, Number(percentage[1]))
-    return { percent, label: `${percent}%` }
+    return { percent, label: `${percent}%`, determinate: true }
   }
-  if (task.status === 'done') return { percent: 100, label: 'Complete' }
-  if (task.status === 'failed') return { percent: 100, label: 'Needs attention' }
-  if (task.status === 'running') return { percent: 58, label: 'In progress' }
-  return { percent: 0, label: 'Not started' }
+  if (task.goal?.status === 'achieved' || task.result_packet?.status === 'verified') return { percent: 100, label: 'Verified', determinate: true }
+  if (task.status === 'done') return { percent: null, label: 'Finished · review evidence', determinate: false }
+  if (task.status === 'failed') return { percent: null, label: 'Needs attention', determinate: false }
+  if (task.status === 'running') return { percent: null, label: 'Working', determinate: false }
+  return { percent: 0, label: 'Not started', determinate: true }
+}
+
+export function taskState(task) {
+  if (task.goal?.status) return task.goal.status
+  if (task.status === 'running') return 'working'
+  if (task.status === 'failed') return 'blocked'
+  if (task.result_packet?.status === 'verified') return 'achieved'
+  if (task.status === 'done') return 'needs_review'
+  return 'ready'
+}
+
+export function taskStateMeta(task) {
+  const state = taskState(task)
+  return { state, ...(GOAL_STATUS[state] || GOAL_STATUS.ready) }
+}
+
+export function taskRunBlocker(task, now = Date.now() / 1000) {
+  const goal = task.goal
+  if (!goal || goal.mode !== 'loop') return null
+  if (goal.status === 'achieved') return 'Goal is already achieved'
+  if (goal.attempts >= goal.max_attempts) return `Goal attempt limit reached (${goal.attempts}/${goal.max_attempts})`
+  if (goal.token_budget && goal.tokens_used >= goal.token_budget) return 'Goal token budget exhausted'
+  if (goal.started_at && goal.max_minutes && now - goal.started_at >= goal.max_minutes * 60) return 'Goal time budget exhausted'
+  return null
+}
+
+export function defaultTaskTab(task) {
+  const state = taskState(task)
+  if (['working', 'needs_input', 'blocked', 'budget_exhausted', 'paused'].includes(state)) return 'goal'
+  return 'outcome'
+}
+
+export function taskVerification(task) {
+  const latest = task.executions?.[task.executions.length - 1]
+  return task.result_packet?.verification || task.goal?.criteria || latest?.verifications || []
+}
+
+export function taskResultPacket(task) {
+  const latest = task.executions?.[task.executions.length - 1]
+  if (task.result_packet) return task.result_packet
+  const status = task.status === 'running' ? 'working' : latest?.result === 'failed' ? 'failed' : latest?.result === 'succeeded' ? 'needs_review' : 'pending'
+  return {
+    status,
+    summary: latest?.summary || latest?.progress_detail || latest?.error || '',
+    verification: taskVerification(task),
+    artifact_ids: (latest?.artifacts || []).map(item => item.id),
+    risks: latest?.error ? [latest.error] : [],
+    next_actions: task.status === 'running' ? ['Wait for the next verified checkpoint'] : ['Run the task to produce an outcome'],
+    changed_files: 0,
+  }
+}
+
+export function taskAttempts(task) {
+  return (task.executions || []).map((exec, index) => ({
+    ...exec,
+    number: index + 1,
+    title: `Attempt ${index + 1}`,
+    status: exec.result || (task.status === 'running' && index === task.executions.length - 1 ? 'running' : 'pending'),
+    steps: Array.isArray(exec.steps) ? exec.steps : [],
+  }))
 }
 
 export function taskFocus(task) {
   const latest = task.executions?.[task.executions.length - 1]
-  const status = task.status === 'running' ? 'In progress' : task.status === 'done' ? 'Completed' : task.status === 'failed' ? 'Needs attention' : 'Ready'
-  const result = latest?.summary || task.latest_result || task.final_result || latest?.error || ''
+  const state = taskStateMeta(task)
+  const packet = taskResultPacket(task)
+  const status = state.label
+  const result = packet.summary || latest?.summary || task.latest_result || task.final_result || latest?.error || ''
   const current = task.status === 'running'
     ? latest?.progress_detail || latest?.progress || 'The agent is working through the task.'
     : task.status === 'done'
@@ -236,5 +334,5 @@ export function taskFocus(task) {
       : task.status === 'failed'
         ? 'Open the run, adjust the instruction, then try again.'
         : 'Run the task to begin the first agent step.')
-  return { status, current, result, next, progress: taskProgress(task), keyPoints: taskKeyPoints(task) }
+  return { status, state: state.state, current, result, next, progress: taskProgress(task), keyPoints: taskKeyPoints(task) }
 }

@@ -1,13 +1,14 @@
-"""Kanban board — single-file backend for the external KiroCrew app.
+"""KiroCrew route adapter for the external Kanban app.
 
 External-app contract (differs from builtins): ``register_routes(ctx)`` returns
 a ``list[AppRoute]`` whose paths are RELATIVE to ``/api/apps/kanban``, and each
 handler takes ``(request, ctx)``. The RouteRegistry catch-all dispatches to
 these; registering on the aiohttp router directly would never be reached.
 
-Everything lives in this one module because the app loader imports hook modules
-by file path in an isolated namespace — a relative import between app modules
-has no package to resolve against.
+Domain models, storage, serialization, and engine services live in their own
+modules. This file remains the host compatibility boundary: KiroCrew may import
+the hook by file path in an isolated namespace, so each feature import retains a
+small file-loader fallback.
 
 Running a card starts one of the Host's user-visible engines. Chat and Autopilot
 use a REAL dashboard chat session (a named chat slot), while Task Runner uses the
@@ -27,13 +28,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib.util
+import inspect
 import json
 import logging
 import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -53,7 +55,16 @@ from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 try:
-    from .models import ExecutionRecord, TaskRecord
+    from .models import (
+        ActivityRecord,
+        ArtifactRecord,
+        ExecutionRecord,
+        ExecutionStepRecord,
+        GoalRecord,
+        ResultPacket,
+        TaskRecord,
+        VerificationRecord,
+    )
 except ImportError:
     _models_path = Path(__file__).with_name("models.py")
     _models_spec = importlib.util.spec_from_file_location("_kanban_models", _models_path)
@@ -64,8 +75,14 @@ except ImportError:
     # isolated hook loader does not register file-loaded modules for us.
     sys.modules[_models_spec.name] = _models_module
     _models_spec.loader.exec_module(_models_module)
+    ActivityRecord = _models_module.ActivityRecord
+    ArtifactRecord = _models_module.ArtifactRecord
     ExecutionRecord = _models_module.ExecutionRecord
+    ExecutionStepRecord = _models_module.ExecutionStepRecord
+    GoalRecord = _models_module.GoalRecord
+    ResultPacket = _models_module.ResultPacket
     TaskRecord = _models_module.TaskRecord
+    VerificationRecord = _models_module.VerificationRecord
 
 try:
     from .services.chat_service import submit_feedback
@@ -116,8 +133,10 @@ except ImportError:
 
 try:
     from .services.task_service import (
-        attach_runner_id, attach_session_key, create_task, move_task,
-        settle_execution, start_execution, update_execution_progress,
+        attach_runner_id, attach_session_key, build_goal, configure_goal,
+        create_task, goal_run_blocker, mark_goal_status, move_task, settle_execution,
+        should_continue_goal, start_execution, update_execution_progress,
+        update_execution_snapshot,
     )
 except ImportError:
     _task_service_path = Path(__file__).with_name("services") / "task_service.py"
@@ -129,11 +148,17 @@ except ImportError:
     _task_service_spec.loader.exec_module(_task_service_module)
     attach_runner_id = _task_service_module.attach_runner_id
     attach_session_key = _task_service_module.attach_session_key
+    build_goal = _task_service_module.build_goal
+    configure_goal = _task_service_module.configure_goal
     create_task = _task_service_module.create_task
+    goal_run_blocker = _task_service_module.goal_run_blocker
+    mark_goal_status = _task_service_module.mark_goal_status
     move_task = _task_service_module.move_task
     settle_execution = _task_service_module.settle_execution
+    should_continue_goal = _task_service_module.should_continue_goal
     start_execution = _task_service_module.start_execution
     update_execution_progress = _task_service_module.update_execution_progress
+    update_execution_snapshot = _task_service_module.update_execution_snapshot
 
 try:
     from .store import BoardStore
@@ -187,7 +212,7 @@ _WATCH_TIMEOUT_SECS = 30 * 60
 #: attached the key is gone — and cancelling it is what frees the card.
 _SESSION_ATTACH_GRACE_SECS = 120
 
-_STORE_VERSION = 2
+_STORE_VERSION = 3
 
 
 class BoardUnreadableError(RuntimeError):
@@ -520,6 +545,147 @@ def LegacyTaskToDict(task: TaskRecord) -> dict[str, Any]:
     return asdict(task)
 
 
+def _string_list(raw: Any, field_name: str, *, limit: int = 200) -> list[str]:
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise BoardUnreadableError(f"board.json has malformed {field_name}")
+    return raw[:limit]
+
+
+def _string_map(raw: Any, field_name: str) -> dict[str, str]:
+    if not isinstance(raw, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in raw.items()
+    ):
+        raise BoardUnreadableError(f"board.json has malformed {field_name}")
+    return raw
+
+
+def _verification_from_dict(raw: Any) -> VerificationRecord:
+    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not isinstance(raw.get("label"), str):
+        raise BoardUnreadableError("board.json has malformed verification evidence")
+    status = raw.get("status", "pending")
+    if status not in ("pending", "running", "passed", "failed", "unknown"):
+        raise BoardUnreadableError("board.json has verification evidence with an unknown status")
+    checked_at = raw.get("checked_at")
+    if checked_at is not None and (not isinstance(checked_at, (int, float)) or isinstance(checked_at, bool)):
+        raise BoardUnreadableError("board.json has verification evidence with a malformed timestamp")
+    return VerificationRecord(
+        id=raw["id"],
+        label=raw["label"],
+        status=status,
+        evidence=str(raw.get("evidence", "")),
+        source=str(raw.get("source", "")),
+        required=raw.get("required", True) is not False,
+        checked_at=float(checked_at) if checked_at is not None else None,
+        artifact_ids=_string_list(raw.get("artifact_ids", []), "verification artifact ids"),
+    )
+
+
+def _artifact_from_dict(raw: Any) -> ArtifactRecord:
+    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not isinstance(raw.get("title"), str):
+        raise BoardUnreadableError("board.json has a malformed artifact")
+    created_at = raw.get("created_at", 0)
+    if not isinstance(created_at, (int, float)) or isinstance(created_at, bool):
+        raise BoardUnreadableError("board.json has an artifact with a malformed timestamp")
+    for key in ("url", "path", "execution_id", "step_id", "preview"):
+        if raw.get(key) is not None and not isinstance(raw.get(key), str):
+            raise BoardUnreadableError(f"board.json has an artifact with malformed {key}")
+    return ArtifactRecord(
+        id=raw["id"],
+        title=raw["title"],
+        kind=str(raw.get("kind", "artifact")),
+        url=raw.get("url"),
+        path=raw.get("path"),
+        execution_id=raw.get("execution_id"),
+        step_id=raw.get("step_id"),
+        preview=raw.get("preview"),
+        created_at=float(created_at),
+        metadata=_string_map(raw.get("metadata", {}), "artifact metadata"),
+    )
+
+
+def _step_from_dict(raw: Any) -> ExecutionStepRecord:
+    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not isinstance(raw.get("title"), str):
+        raise BoardUnreadableError("board.json has a malformed execution step")
+    index = raw.get("index", 0)
+    attempts = raw.get("attempts", 0)
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in (index, attempts)):
+        raise BoardUnreadableError("board.json has an execution step with malformed counters")
+    return ExecutionStepRecord(
+        id=raw["id"],
+        index=index,
+        title=raw["title"],
+        status=str(raw.get("status", "pending")),
+        summary=str(raw.get("summary", "")),
+        error=str(raw.get("error", "")),
+        attempts=attempts,
+        requires_approval=raw.get("requires_approval") is True,
+        artifact_ids=_string_list(raw.get("artifact_ids", []), "step artifact ids"),
+    )
+
+
+def _goal_from_dict(raw: Any) -> GoalRecord | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("objective"), str):
+        raise BoardUnreadableError("board.json has a malformed goal")
+    criteria_raw = raw.get("criteria", [])
+    if not isinstance(criteria_raw, list):
+        raise BoardUnreadableError("board.json has malformed goal criteria")
+    numeric = {}
+    for key, default in (("max_attempts", 3), ("max_minutes", 60), ("token_budget", 50000), ("attempts", 0), ("tokens_used", 0), ("repeated_failures", 0)):
+        value = raw.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise BoardUnreadableError(f"board.json has a goal with malformed {key}")
+        numeric[key] = value
+    started_at = raw.get("started_at")
+    achieved_at = raw.get("achieved_at")
+    for key, value in (("started_at", started_at), ("achieved_at", achieved_at)):
+        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+            raise BoardUnreadableError(f"board.json has a goal with malformed {key}")
+    mode = raw.get("mode", "one_run")
+    status = raw.get("status", "ready")
+    if mode not in ("one_run", "loop"):
+        raise BoardUnreadableError("board.json has a goal with an unknown mode")
+    if status not in ("ready", "working", "needs_input", "needs_review", "achieved", "paused", "blocked", "budget_exhausted", "cancelled"):
+        raise BoardUnreadableError("board.json has a goal with an unknown status")
+    return GoalRecord(
+        objective=raw["objective"],
+        mode=mode,
+        status=status,
+        criteria=[_verification_from_dict(item) for item in criteria_raw],
+        **numeric,
+        started_at=float(started_at) if started_at is not None else None,
+        achieved_at=float(achieved_at) if achieved_at is not None else None,
+        stop_reason=str(raw.get("stop_reason", "")),
+        last_failure=str(raw.get("last_failure", "")),
+        pause_on_approval=raw.get("pause_on_approval", True) is not False,
+        pause_on_ambiguity=raw.get("pause_on_ambiguity", True) is not False,
+        pause_on_no_progress=raw.get("pause_on_no_progress", True) is not False,
+    )
+
+
+def _result_packet_from_dict(raw: Any) -> ResultPacket | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BoardUnreadableError("board.json has a malformed result packet")
+    verification_raw = raw.get("verification", [])
+    created_at = raw.get("created_at", 0)
+    changed_files = raw.get("changed_files", 0)
+    if not isinstance(verification_raw, list) or not isinstance(created_at, (int, float)) or isinstance(created_at, bool) or not isinstance(changed_files, int) or isinstance(changed_files, bool):
+        raise BoardUnreadableError("board.json has a malformed result packet")
+    return ResultPacket(
+        status=str(raw.get("status", "pending")),
+        summary=str(raw.get("summary", "")),
+        verification=[_verification_from_dict(item) for item in verification_raw],
+        artifact_ids=_string_list(raw.get("artifact_ids", []), "result artifact ids"),
+        risks=_string_list(raw.get("risks", []), "result risks", limit=50),
+        next_actions=_string_list(raw.get("next_actions", []), "result next actions", limit=50),
+        changed_files=changed_files,
+        created_at=float(created_at),
+    )
+
+
 def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
     """Deserialize one task from a dict.
 
@@ -569,6 +735,14 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             progress = ex_raw.get("progress")
             progress_detail = ex_raw.get("progress_detail")
             summary = ex_raw.get("summary")
+            steps_raw = ex_raw.get("steps", [])
+            artifacts_raw = ex_raw.get("artifacts", [])
+            verifications_raw = ex_raw.get("verifications", [])
+            tokens_used = ex_raw.get("tokens_used", 0)
+            replan_count = ex_raw.get("replan_count", 0)
+            commit_hashes = ex_raw.get("commit_hashes", [])
+            branch_name = ex_raw.get("branch_name", "")
+            stop_reason = ex_raw.get("stop_reason", "")
             if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
                 raise BoardUnreadableError("board.json has an execution with a non-numeric start")
             if ended_at is not None and (
@@ -591,6 +765,12 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                 raise BoardUnreadableError("board.json has an execution with a non-string progress detail")
             if summary is not None and not isinstance(summary, str):
                 raise BoardUnreadableError("board.json has an execution with a non-string summary")
+            if not isinstance(steps_raw, list) or not isinstance(artifacts_raw, list) or not isinstance(verifications_raw, list):
+                raise BoardUnreadableError("board.json has an execution with malformed outcome details")
+            if any(not isinstance(value, int) or isinstance(value, bool) for value in (tokens_used, replan_count)):
+                raise BoardUnreadableError("board.json has an execution with malformed usage counters")
+            if not isinstance(branch_name, str) or not isinstance(stop_reason, str):
+                raise BoardUnreadableError("board.json has an execution with malformed git or stop details")
             executions.append(
                 ExecutionRecord(
                     id=ex_id,
@@ -604,6 +784,14 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                     progress=progress,
                     progress_detail=progress_detail,
                     summary=summary,
+                    steps=[_step_from_dict(item) for item in steps_raw],
+                    artifacts=[_artifact_from_dict(item) for item in artifacts_raw],
+                    verifications=[_verification_from_dict(item) for item in verifications_raw],
+                    tokens_used=tokens_used,
+                    replan_count=replan_count,
+                    commit_hashes=_string_list(commit_hashes, "execution commit hashes"),
+                    branch_name=branch_name,
+                    stop_reason=stop_reason,
                 )
             )
 
@@ -635,6 +823,10 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                 raise BoardUnreadableError("board.json has malformed activity execution id")
             activity.append(ActivityRecord(item["id"], float(item["at"]), item["kind"], item["summary"], item.get("execution_id")))
 
+        task_artifacts_raw = raw.get("artifacts", [])
+        if not isinstance(task_artifacts_raw, list):
+            raise BoardUnreadableError("board.json has malformed task artifacts")
+
         return TaskRecord(
             id=task_id,
             title=title,
@@ -659,6 +851,9 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             assignee=assignee,
             metadata=metadata,
             activity=activity[-200:],
+            goal=_goal_from_dict(raw.get("goal")),
+            artifacts=[_artifact_from_dict(item) for item in task_artifacts_raw][-300:],
+            result_packet=_result_packet_from_dict(raw.get("result_packet")),
         )
     except BoardUnreadableError:
         logger.error("kanban: refusing to read board.json: task %s is invalid", task_id)
@@ -845,7 +1040,12 @@ def _get_store(ctx: Any) -> KanbanStore:
     """
     global _STORE
     if _STORE is None:
-        _STORE = BoardStore(Path(ctx.data_dir) / "board", from_dict=_task_from_dict, to_dict=_task_to_dict)
+        _STORE = BoardStore(
+            Path(ctx.data_dir) / "board",
+            from_dict=_task_from_dict,
+            to_dict=_task_to_dict,
+            version=_STORE_VERSION,
+        )
     return _STORE
 
 
@@ -969,6 +1169,36 @@ def _engine_field(body: dict[str, Any], key: str = "engine", *, default: str = "
         allowed = ", ".join(TASK_ENGINES)
         raise _BadRequest(f"{key} must be one of: {allowed}", f"{key}_invalid")
     return value
+
+
+def _goal_field(body: dict[str, Any], *, objective: str) -> GoalRecord | None:
+    """Read and bound the optional `Continue until verified` contract."""
+    raw = body.get("goal")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise _BadRequest("goal must be an object", "goal_not_object")
+    mode = raw.get("mode", "loop")
+    if mode not in ("one_run", "loop"):
+        raise _BadRequest("goal.mode must be one_run or loop", "goal_mode_invalid")
+    criteria = raw.get("criteria", [])
+    if not isinstance(criteria, list) or not all(isinstance(item, str) for item in criteria):
+        raise _BadRequest("goal.criteria must be a list of strings", "goal_criteria_invalid")
+    values = {}
+    for key, default in (("max_attempts", 3), ("max_minutes", 60), ("token_budget", 50000)):
+        value = raw.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise _BadRequest(f"goal.{key} must be an integer", f"goal_{key}_invalid")
+        values[key] = value
+    goal_objective = raw.get("objective", objective)
+    if not isinstance(goal_objective, str):
+        raise _BadRequest("goal.objective must be a string", "goal_objective_invalid")
+    return build_goal(
+        goal_objective or objective,
+        mode=mode,
+        criteria=criteria,
+        **values,
+    )
 
 
 # ── Naming (AI-generated title + description) ──
@@ -1115,6 +1345,7 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         description = _str_field(body, "description")
         tags = _tags_field(body)
         engine = _engine_field(body)
+        goal = _goal_field(body, objective=prompt or title)
     except _BadRequest as bad:
         return bad.response()
 
@@ -1143,7 +1374,8 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         tags=tags,
         priority=body.get("priority", "medium"),
         refining=name_in_background,
-        engine=engine,
+        engine="task_runner" if goal is not None and goal.mode == "loop" else engine,
+        goal=goal,
     )
     await asyncio.to_thread(store.add_task, task)
     if name_in_background:
@@ -1210,6 +1442,9 @@ async def _name_task_in_background(
             assignee=task.assignee,
             metadata=task.metadata,
             activity=_activity(task, "refined", "Task title refined"),
+            goal=task.goal,
+            artifacts=task.artifacts,
+            result_packet=task.result_packet,
         )
 
     if cancelled is not None:
@@ -1311,6 +1546,9 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
             assignee=assignee if isinstance(assignee, str) else task.assignee,
             metadata=metadata if isinstance(metadata, dict) else task.metadata,
             activity=_activity(task, "edited", "Task details updated"),
+            goal=task.goal,
+            artifacts=task.artifacts,
+            result_packet=task.result_packet,
         )
 
     result = await asyncio.to_thread(store.update_task, task_id, updater)
@@ -1440,42 +1678,67 @@ async def _watch_task_runner_execution(
     execution_id: str,
     runner_id: str,
 ) -> None:
-    """Settle a Kanban execution from the Host Task Runner run registry."""
+    """Project and settle one Host Task Runner run, including bounded retries."""
     runner = getattr(state, "task_runner", None)
-    deadline = time.monotonic() + _WATCH_TIMEOUT_SECS
-    last_progress: tuple[str | None, str | None] | None = None
+    initial = await asyncio.to_thread(store.get_task, task_id)
+    goal_minutes = getattr(getattr(initial, "goal", None), "max_minutes", 0)
+    watch_budget = max(_WATCH_TIMEOUT_SECS, min(12 * 60 * 60, int(goal_minutes or 0) * 60))
+    deadline = time.monotonic() + watch_budget
+    last_fingerprint: tuple[Any, ...] | None = None
+    missing_polls = 0
     while time.monotonic() < deadline:
-        run = getattr(runner, "_runs", {}).get(runner_id) if runner is not None else None
+        run = await _task_runner_snapshot(runner, runner_id)
         if run is None:
+            missing_polls += 1
+            if missing_polls < 5:
+                await asyncio.sleep(2)
+                continue
             await _settle_task(store, task_id, execution_id, "failed", "Task Runner run disappeared")
             return
-        status = str(getattr(run, "status", "")).lower()
-        progress = _task_runner_text(run, "progress") or (status.title() if status else None)
-        progress_detail = (
-            _task_runner_text(run, "progress_detail")
-            or _task_runner_text(run, "current_step")
-            or _task_runner_text(run, "status_message")
-        )
-        current_progress = (progress, progress_detail)
-        if current_progress != last_progress:
-            await asyncio.to_thread(
+        missing_polls = 0
+        status = str(_task_runner_value(run, "status", "")).lower()
+        fingerprint = _task_runner_fingerprint(run)
+        updated = None
+        if fingerprint != last_fingerprint:
+            updated = await asyncio.to_thread(
                 store.update_task,
                 task_id,
-                lambda cur, p=progress, d=progress_detail: update_execution_progress(
-                    cur, execution_id, p, d
-                ),
+                lambda cur, snap=run: update_execution_snapshot(cur, execution_id, snap),
             )
-            last_progress = current_progress
-        if status in ("completed", "failed", "cancelled"):
-            outcome = "succeeded" if status == "completed" else status
-            error = getattr(run, "error", "") or None
+            last_fingerprint = fingerprint
+        if updated is None:
+            updated = await asyncio.to_thread(store.get_task, task_id)
+
+        goal = getattr(updated, "goal", None)
+        if goal is not None and goal.mode == "loop":
+            elapsed = time.time() - (goal.started_at or time.time())
+            budget_reason = ""
+            if goal.token_budget and goal.tokens_used >= goal.token_budget:
+                budget_reason = f"Goal token budget exhausted ({goal.tokens_used:,}/{goal.token_budget:,})"
+            elif goal.max_minutes and elapsed >= goal.max_minutes * 60:
+                budget_reason = f"Goal time budget exhausted ({goal.max_minutes} minutes)"
+            if budget_reason:
+                await _pause_task_runner(runner, runner_id)
+                await asyncio.to_thread(
+                    store.update_task,
+                    task_id,
+                    lambda cur, reason=budget_reason: mark_goal_status(cur, "budget_exhausted", reason),
+                )
+                await _settle_task(store, task_id, execution_id, "cancelled", budget_reason)
+                return
+
+        if status in ("completed", "succeeded", "failed", "cancelled", "paused"):
+            outcome = "succeeded" if status in ("completed", "succeeded") else status
+            if outcome == "paused":
+                outcome = "cancelled"
+            error = _task_runner_value(run, "error", "") or None
             summary = (
                 _task_runner_text(run, "summary")
                 or _task_runner_text(run, "result")
                 or _task_runner_text(run, "output")
-                or progress_detail
+                or _task_runner_text(run, "progress_detail")
             )
-            await _settle_task(
+            settled = await _settle_task(
                 store,
                 task_id,
                 execution_id,
@@ -1483,14 +1746,109 @@ async def _watch_task_runner_execution(
                 str(error)[:500] if error else None,
                 summary=summary,
             )
+            if settled is not None and should_continue_goal(settled):
+                await _start_goal_retry(state, store, settled)
             return
         await asyncio.sleep(2)
-    await _settle_task(store, task_id, execution_id, "failed", "Task Runner execution timed out (30m)")
+    await _pause_task_runner(runner, runner_id)
+    await _settle_task(store, task_id, execution_id, "failed", f"Task Runner execution timed out ({watch_budget // 60}m)")
+
+
+async def _task_runner_snapshot(runner: Any, runner_id: str) -> Any | None:
+    """Prefer the Host's public status projection; retain an old-host fallback."""
+    if runner is None:
+        return None
+    status_fn = getattr(runner, "status", None)
+    if callable(status_fn):
+        try:
+            payload = status_fn()
+            if inspect.isawaitable(payload):
+                payload = await payload
+            runs = payload.get("runs", []) if isinstance(payload, dict) else []
+            if isinstance(runs, dict):
+                found = runs.get(runner_id)
+                if found is not None:
+                    return found
+            elif isinstance(runs, list):
+                found = next(
+                    (item for item in runs if str(_task_runner_value(item, "task_id", "")) == runner_id),
+                    None,
+                )
+                if found is not None:
+                    return found
+        except Exception:
+            logger.debug("kanban: Task Runner public status projection failed", exc_info=True)
+    return getattr(runner, "_runs", {}).get(runner_id)
+
+
+def _task_runner_value(run: Any, field_name: str, default: Any = None) -> Any:
+    return run.get(field_name, default) if isinstance(run, dict) else getattr(run, field_name, default)
+
+
+def _task_runner_fingerprint(run: Any) -> tuple[Any, ...]:
+    raw_steps = _task_runner_value(run, "step_details", _task_runner_value(run, "tasks", []))
+    step_bits = []
+    if isinstance(raw_steps, list):
+        for step in raw_steps:
+            step_bits.append((
+                str(_task_runner_value(step, "status", "")),
+                int(_task_runner_value(step, "attempts", 0) or 0),
+                str(_task_runner_value(step, "result", ""))[-300:],
+                str(_task_runner_value(step, "error", ""))[-300:],
+            ))
+    return (
+        str(_task_runner_value(run, "status", "")),
+        int(_task_runner_value(run, "current_task", 0) or 0),
+        int(_task_runner_value(run, "completed", 0) or 0),
+        int(_task_runner_value(run, "failed", 0) or 0),
+        int(_task_runner_value(run, "tokens_used", 0) or 0),
+        int(_task_runner_value(run, "replan_count", 0) or 0),
+        tuple(step_bits),
+    )
+
+
+async def _pause_task_runner(runner: Any, runner_id: str) -> None:
+    pause = getattr(runner, "pause", None)
+    cancel = getattr(runner, "cancel", None)
+    try:
+        result = pause(runner_id) if callable(pause) else cancel(runner_id) if callable(cancel) else None
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        logger.warning("kanban: could not pause Task Runner run %s", runner_id, exc_info=True)
+
+
+async def _start_goal_retry(state: Any, store: KanbanStore, task: TaskRecord) -> None:
+    """Start the next bounded Task Runner attempt after a non-repeating failure."""
+    claim: dict[str, Any] = {}
+
+    def updater(current: TaskRecord) -> TaskRecord:
+        if not should_continue_goal(current) or current.status == "running":
+            return current
+        running, execution = start_execution(current, "task_runner")
+        claim["task"] = running
+        claim["execution"] = execution
+        return running
+
+    current = await asyncio.to_thread(store.update_task, task.id, updater)
+    if current is None or "execution" not in claim:
+        return
+    execution = claim["execution"]
+    try:
+        await _start_task_runner(
+            state,
+            store,
+            claim["task"],
+            execution.id,
+            claim["task"].goal.objective if claim["task"].goal else claim["task"].prompt,
+        )
+    except Exception as exc:
+        await _settle_task(store, task.id, execution.id, "failed", str(exc))
 
 
 def _task_runner_text(run: Any, field_name: str) -> str | None:
     """Read a concise text field across supported Host Task Runner versions."""
-    value = getattr(run, field_name, None)
+    value = _task_runner_value(run, field_name)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         value = str(value)
     if not isinstance(value, str):
@@ -1545,6 +1903,10 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
         if current.status == "running":
             claim["conflict"] = True
             return current
+        blocker = goal_run_blocker(current)
+        if blocker:
+            claim["goal_blocker"] = blocker
+            return current
         prompt = current.prompt.strip() or current.title
         engine = _resolve_engine(current.engine, prompt)
         claimed, execution = start_execution(current, engine)
@@ -1559,6 +1921,10 @@ async def api_kanban_tasks_run(request: web.Request, ctx: Any) -> web.Response:
     if claim.get("conflict"):
         return web.json_response(
             {"error": "Task is already running", "code": "task_already_running"}, status=409
+        )
+    if claim.get("goal_blocker"):
+        return web.json_response(
+            {"error": claim["goal_blocker"], "code": "goal_limit_reached"}, status=409
         )
 
     new_task: TaskRecord = claim["task"]
@@ -1622,10 +1988,15 @@ async def api_kanban_tasks_feedback(request: web.Request, ctx: Any) -> web.Respo
             {"error": "This gateway does not expose chat sessions to apps", "code": "chat_unavailable"},
             status=503,
         )
+    store = _get_store(ctx)
+    task = await asyncio.to_thread(store.get_task, request.match_info["id"])
+    latest = task.executions[-1] if task is not None and task.executions else None
+    if latest is not None and latest.engine == "task_runner":
+        return await _submit_task_runner_feedback(request, state, store, task)
     return await submit_feedback(
         request,
         ctx,
-        store=_get_store(ctx),
+        store=store,
         state=state,
         read_object_body=_read_object_body,
         str_field=_str_field,
@@ -1635,6 +2006,175 @@ async def api_kanban_tasks_feedback(request: web.Request, ctx: Any) -> web.Respo
         run_chat=_capped_run_chat,
         watch_execution=_watch_execution,
     )
+
+
+async def _submit_task_runner_feedback(
+    request: web.Request,
+    state: Any,
+    store: KanbanStore,
+    task: TaskRecord,
+) -> web.Response:
+    """Turn a concise drawer instruction into the next bounded goal attempt."""
+    try:
+        body = await _read_object_body(request)
+        message = _str_field(body, "message").strip()
+    except _BadRequest as bad:
+        return bad.response()
+    if not message:
+        return web.json_response({"error": "Feedback message cannot be empty", "code": "feedback_empty"}, status=400)
+    if len(message) > 8000:
+        return web.json_response({"error": "Feedback message is too long", "code": "feedback_too_long"}, status=400)
+    if not _task_runner_is_available(state):
+        return web.json_response(_task_runner_not_enabled_payload(), status=409)
+
+    claim: dict[str, Any] = {}
+
+    def updater(current: TaskRecord) -> TaskRecord:
+        if current.status == "running":
+            claim["conflict"] = True
+            return current
+        blocker = goal_run_blocker(current)
+        if blocker:
+            claim["goal_blocker"] = blocker
+            return current
+        running, execution = start_execution(current, "task_runner")
+        claim["task"] = running
+        claim["execution"] = execution
+        return running
+
+    result = await asyncio.to_thread(store.update_task, task.id, updater)
+    if result is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+    if claim.get("conflict"):
+        return web.json_response({"error": "Task is already running", "code": "task_already_running"}, status=409)
+    if claim.get("goal_blocker"):
+        return web.json_response({"error": claim["goal_blocker"], "code": "goal_limit_reached"}, status=409)
+    execution = claim["execution"]
+    try:
+        runner_id = await _start_task_runner(
+            state, store, claim["task"], execution.id, message
+        )
+    except Exception as exc:
+        await _settle_task(store, task.id, execution.id, "failed", str(exc))
+        return web.json_response({"error": f"Failed to continue goal: {exc}", "code": "feedback_start_failed"}, status=500)
+    return web.json_response(
+        {"execution_id": execution.id, "runner_id": runner_id, "status": "running"},
+        status=202,
+    )
+
+
+@_require_enabled
+async def api_kanban_tasks_goal(request: web.Request, ctx: Any) -> web.Response:
+    """POST /tasks/{id}/goal — configure or remove a bounded goal contract."""
+    store = _get_store(ctx)
+    task_id = request.match_info["id"]
+    current = await asyncio.to_thread(store.get_task, task_id)
+    if current is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+    if current.status == "running":
+        return web.json_response({"error": "Pause the current run before changing its goal", "code": "task_is_running"}, status=409)
+    try:
+        body = await _read_object_body(request)
+        goal = _goal_field(body, objective=current.prompt or current.title)
+    except _BadRequest as bad:
+        return bad.response()
+
+    def updater(task: TaskRecord) -> TaskRecord:
+        return replace(
+            task,
+            goal=goal,
+            engine="task_runner" if goal is not None and goal.mode == "loop" else task.engine,
+            updated_at=time.time(),
+            activity=_activity(task, "goal_updated", "Goal contract updated" if goal else "Goal loop disabled"),
+        )
+
+    updated = await asyncio.to_thread(store.update_task, task_id, updater)
+    if updated is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+    return web.json_response(asdict(updated))
+
+
+@_require_enabled
+async def api_kanban_tasks_goal_action(request: web.Request, ctx: Any) -> web.Response:
+    """POST /tasks/{id}/goal/action — pause a loop or accept its evidence."""
+    store = _get_store(ctx)
+    task_id = request.match_info["id"]
+    try:
+        body = await _read_object_body(request)
+        action = _str_field(body, "action").strip().lower()
+    except _BadRequest as bad:
+        return bad.response()
+    if action not in ("pause", "accept"):
+        return web.json_response({"error": "action must be pause or accept", "code": "goal_action_invalid"}, status=400)
+    task = await asyncio.to_thread(store.get_task, task_id)
+    if task is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+
+    if action == "pause":
+        updated = await asyncio.to_thread(
+            store.update_task,
+            task_id,
+            lambda cur: mark_goal_status(cur, "paused", "Paused by the user"),
+        )
+        if updated is None:
+            return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+        latest = task.executions[-1] if task.executions else None
+        if latest and latest.runner_id:
+            state = _get_state(request)
+            await _pause_task_runner(getattr(state, "task_runner", None), latest.runner_id)
+        return web.json_response(asdict(updated))
+
+    def accept(current: TaskRecord) -> TaskRecord:
+        now = time.time()
+        human_check = VerificationRecord(
+            id=str(uuid.uuid4()),
+            label="Outcome accepted by the user",
+            status="passed",
+            evidence="The user reviewed and accepted the result in Kanban",
+            source="human_review",
+            checked_at=now,
+        )
+        goal = current.goal
+        if goal is not None:
+            checks = [
+                replace(
+                    check,
+                    status="passed",
+                    evidence=(f"Accepted by the user after review. Prior evidence: {check.evidence}" if check.status == "failed" and check.evidence else check.evidence or "Accepted during human review")[:1000],
+                    source="human_review",
+                    checked_at=check.checked_at or now,
+                )
+                for check in goal.criteria
+            ]
+            if not checks:
+                checks = [human_check]
+            goal = replace(goal, status="achieved", criteria=checks, achieved_at=now, stop_reason="Accepted by the user")
+        packet = current.result_packet
+        if packet is not None:
+            verification = [
+                replace(
+                    check,
+                    status="passed",
+                    evidence=(f"Accepted by the user after review. Prior evidence: {check.evidence}" if check.status == "failed" and check.evidence else check.evidence or "Accepted during human review")[:1000],
+                    source="human_review",
+                    checked_at=check.checked_at or now,
+                )
+                for check in packet.verification
+            ] or [human_check]
+            packet = replace(packet, status="verified", verification=verification)
+        return replace(
+            current,
+            status="done",
+            goal=goal,
+            result_packet=packet,
+            updated_at=now,
+            activity=_activity(current, "accepted", "Outcome accepted by the user"),
+        )
+
+    updated = await asyncio.to_thread(store.update_task, task_id, accept)
+    if updated is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+    return web.json_response(asdict(updated))
 
 
 #: What the card's session says when its turn never got a permit. Rendered as an
@@ -2038,14 +2578,15 @@ async def _settle_task(
     outcome: str,
     error: str | None = None,
     summary: str | None = None,
-) -> None:
+) -> TaskRecord | None:
     """Settle a kanban task execution."""
 
     def updater(task: TaskRecord) -> TaskRecord:
         return settle_execution(task, execution_id, outcome, error, summary)
 
-    await asyncio.to_thread(store.update_task, task_id, updater)
+    result = await asyncio.to_thread(store.update_task, task_id, updater)
     logger.info("kanban: task %s settled as %s", task_id[:8], outcome)
+    return result
 
 
 # ── Reconcile ──
@@ -2085,11 +2626,7 @@ async def api_kanban_tasks_reconcile(request: web.Request, ctx: Any) -> web.Resp
             continue
 
         if last_exec.engine == "task_runner":
-            run = (
-                getattr(runner, "_runs", {}).get(last_exec.runner_id)
-                if runner is not None and last_exec.runner_id
-                else None
-            )
+            run = await _task_runner_snapshot(runner, last_exec.runner_id) if last_exec.runner_id else None
             if run is None:
                 if time.time() - last_exec.started_at < _SESSION_ATTACH_GRACE_SECS:
                     continue
@@ -2102,18 +2639,36 @@ async def api_kanban_tasks_reconcile(request: web.Request, ctx: Any) -> web.Resp
                 )
                 reconciled += 1
                 continue
-            runner_status = str(getattr(run, "status", "")).lower()
-            if runner_status not in ("completed", "failed", "cancelled"):
-                continue
-            runner_outcome = "succeeded" if runner_status == "completed" else runner_status
-            runner_error = getattr(run, "error", "") or None
-            await asyncio.to_thread(
+            projected = await asyncio.to_thread(
                 store.update_task,
                 task.id,
-                lambda t, e=exec_id, o=runner_outcome, x=runner_error: settle_execution(
-                    t, e, o, str(x)[:500] if x else None
-                ),
+                lambda t, e=exec_id, snap=run: update_execution_snapshot(t, e, snap),
             )
+            runner_status = str(_task_runner_value(run, "status", "")).lower()
+            if runner_status not in ("completed", "succeeded", "failed", "cancelled", "paused"):
+                asyncio.create_task(
+                    _watch_task_runner_execution(state, store, task.id, exec_id, last_exec.runner_id)
+                )
+                continue
+            runner_outcome = "succeeded" if runner_status in ("completed", "succeeded") else runner_status
+            if runner_outcome == "paused":
+                runner_outcome = "cancelled"
+            runner_error = _task_runner_value(run, "error", "") or None
+            summary = (
+                _task_runner_text(run, "summary")
+                or _task_runner_text(run, "result")
+                or _task_runner_text(run, "output")
+            )
+            settled = await _settle_task(
+                store,
+                task.id,
+                exec_id,
+                runner_outcome,
+                str(runner_error)[:500] if runner_error else None,
+                summary=summary,
+            )
+            if settled is not None and should_continue_goal(settled):
+                await _start_goal_retry(state, store, settled)
             reconciled += 1
             continue
 
@@ -2172,5 +2727,7 @@ def register_routes(ctx: Any) -> list[AppRoute]:
         AppRoute("POST", "/tasks/{id}/move", api_kanban_tasks_move),
         AppRoute("POST", "/tasks/{id}/run", api_kanban_tasks_run),
         AppRoute("POST", "/tasks/{id}/feedback", api_kanban_tasks_feedback),
+        AppRoute("POST", "/tasks/{id}/goal", api_kanban_tasks_goal),
+        AppRoute("POST", "/tasks/{id}/goal/action", api_kanban_tasks_goal_action),
         AppRoute("POST", "/reconcile", api_kanban_tasks_reconcile),
     ]

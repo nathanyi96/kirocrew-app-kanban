@@ -91,6 +91,26 @@ check(
     str(body)[:120],
 )
 
+s, body = call(
+    "POST",
+    "/api/apps/kanban/tasks",
+    {
+        "prompt": "Build a verified outcome",
+        "engine": "auto",
+        "goal": {
+            "mode": "loop",
+            "criteria": ["The outcome works", "Checks pass"],
+            "max_attempts": 3,
+            "max_minutes": 30,
+            "token_budget": 25000,
+        },
+    },
+)
+goal_tid = body.get("id", "") if isinstance(body, dict) else ""
+check("create bounded goal -> 201", s == 201, f"status={s}")
+check("goal loop forces task runner", body.get("engine") == "task_runner", str(body)[:160])
+check("goal criteria persist", len(body.get("goal", {}).get("criteria", [])) == 2, str(body)[:160])
+
 s, body = call("POST", "/api/apps/kanban/tasks", {"prompt": "CI smoke task"})
 tid = body.get("id", "") if isinstance(body, dict) else ""
 check("create -> 201", s == 201, f"status={s}")
@@ -118,6 +138,8 @@ s, _ = call("DELETE", f"/api/apps/kanban/tasks/{tid}")
 check("delete -> 200", s == 200, f"status={s}")
 s, _ = call("DELETE", f"/api/apps/kanban/tasks/{engine_tid}")
 check("delete engine task -> 200", s == 200, f"status={s}")
+s, _ = call("DELETE", f"/api/apps/kanban/tasks/{goal_tid}")
+check("delete goal task -> 200", s == 200, f"status={s}")
 
 s, body = call("GET", "/api/apps/kanban/tasks")
 ids = [t.get("id") for t in body.get("tasks", [])] if isinstance(body, dict) else []

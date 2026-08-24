@@ -5,6 +5,7 @@ import { T } from '../theme.ts'
 const { ExternalLink, FileText, FolderOpen, GitCompare, Link2 } = lucide
 
 const META = {
+  artifacts: { title: 'Artifacts', empty: 'No files, links, or commits have been produced yet.', Icon: FolderOpen },
   files: { title: 'Files and artifacts', empty: 'No files or links have been produced yet.', Icon: FolderOpen },
   changes: { title: 'Changes and diffs', empty: 'No diff or patch links have been reported yet.', Icon: GitCompare },
   notes: { title: 'Markdown and notes', empty: 'No Markdown notes have been reported yet.', Icon: FileText },
