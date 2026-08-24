@@ -117,7 +117,7 @@ except ImportError:
 try:
     from .services.task_service import (
         attach_runner_id, attach_session_key, create_task, move_task,
-        settle_execution, start_execution,
+        settle_execution, start_execution, update_execution_progress,
     )
 except ImportError:
     _task_service_path = Path(__file__).with_name("services") / "task_service.py"
@@ -133,6 +133,7 @@ except ImportError:
     move_task = _task_service_module.move_task
     settle_execution = _task_service_module.settle_execution
     start_execution = _task_service_module.start_execution
+    update_execution_progress = _task_service_module.update_execution_progress
 
 try:
     from .store import BoardStore
@@ -238,6 +239,7 @@ class LegacyExecutionRecord:
     runner_id: str | None = None
     progress: str | None = None
     progress_detail: str | None = None
+    summary: str | None = None
 
 
 @dataclass
@@ -403,6 +405,7 @@ def LegacySettleExecution(
                     runner_id=ex.runner_id,
                     progress=ex.progress,
                     progress_detail=ex.progress_detail,
+                    summary=ex.summary,
                 )
             )
         else:
@@ -444,6 +447,7 @@ def LegacyAttachSessionKey(task: TaskRecord, execution_id: str, session_key: str
                     runner_id=ex.runner_id,
                     progress=ex.progress,
                     progress_detail=ex.progress_detail,
+                    summary=ex.summary,
                 )
             )
         else:
@@ -484,6 +488,7 @@ def LegacyAttachRunnerId(task: TaskRecord, execution_id: str, runner_id: str) ->
                     runner_id=runner_id,
                     progress=ex.progress,
                     progress_detail=ex.progress_detail,
+                    summary=ex.summary,
                 )
             )
         else:
@@ -563,6 +568,7 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             runner_id = ex_raw.get("runner_id")
             progress = ex_raw.get("progress")
             progress_detail = ex_raw.get("progress_detail")
+            summary = ex_raw.get("summary")
             if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
                 raise BoardUnreadableError("board.json has an execution with a non-numeric start")
             if ended_at is not None and (
@@ -583,6 +589,8 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                 raise BoardUnreadableError("board.json has an execution with a non-string progress")
             if progress_detail is not None and not isinstance(progress_detail, str):
                 raise BoardUnreadableError("board.json has an execution with a non-string progress detail")
+            if summary is not None and not isinstance(summary, str):
+                raise BoardUnreadableError("board.json has an execution with a non-string summary")
             executions.append(
                 ExecutionRecord(
                     id=ex_id,
@@ -595,6 +603,7 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
                     runner_id=runner_id,
                     progress=progress,
                     progress_detail=progress_detail,
+                    summary=summary,
                 )
             )
 
@@ -1434,19 +1443,60 @@ async def _watch_task_runner_execution(
     """Settle a Kanban execution from the Host Task Runner run registry."""
     runner = getattr(state, "task_runner", None)
     deadline = time.monotonic() + _WATCH_TIMEOUT_SECS
+    last_progress: tuple[str | None, str | None] | None = None
     while time.monotonic() < deadline:
         run = getattr(runner, "_runs", {}).get(runner_id) if runner is not None else None
         if run is None:
             await _settle_task(store, task_id, execution_id, "failed", "Task Runner run disappeared")
             return
         status = str(getattr(run, "status", "")).lower()
+        progress = _task_runner_text(run, "progress") or (status.title() if status else None)
+        progress_detail = (
+            _task_runner_text(run, "progress_detail")
+            or _task_runner_text(run, "current_step")
+            or _task_runner_text(run, "status_message")
+        )
+        current_progress = (progress, progress_detail)
+        if current_progress != last_progress:
+            await asyncio.to_thread(
+                store.update_task,
+                task_id,
+                lambda cur, p=progress, d=progress_detail: update_execution_progress(
+                    cur, execution_id, p, d
+                ),
+            )
+            last_progress = current_progress
         if status in ("completed", "failed", "cancelled"):
             outcome = "succeeded" if status == "completed" else status
             error = getattr(run, "error", "") or None
-            await _settle_task(store, task_id, execution_id, outcome, str(error)[:500] if error else None)
+            summary = (
+                _task_runner_text(run, "summary")
+                or _task_runner_text(run, "result")
+                or _task_runner_text(run, "output")
+                or progress_detail
+            )
+            await _settle_task(
+                store,
+                task_id,
+                execution_id,
+                outcome,
+                str(error)[:500] if error else None,
+                summary=summary,
+            )
             return
         await asyncio.sleep(2)
     await _settle_task(store, task_id, execution_id, "failed", "Task Runner execution timed out (30m)")
+
+
+def _task_runner_text(run: Any, field_name: str) -> str | None:
+    """Read a concise text field across supported Host Task Runner versions."""
+    value = getattr(run, field_name, None)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:8000] if value else None
 
 
 # ── Run Task (trigger execution) ──
@@ -1785,6 +1835,37 @@ def _recorded_error(slot: Any, baseline_total: int) -> str | None:
     return None
 
 
+def _message_text(content: Any) -> str:
+    """Normalize a Host transcript row into displayable text."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, dict):
+        for key in ("text", "content", "value"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+    if isinstance(content, list):
+        return "\n".join(filter(None, (_message_text(part) for part in content))).strip()
+    return ""
+
+
+def _assistant_reply(slot: Any, baseline_total: int) -> str | None:
+    """Return the latest assistant reply written by this execution's turn."""
+    appended = max(0, int(getattr(slot, "total_messages", 0)) - baseline_total)
+    if appended <= 0:
+        return None
+    rows = getattr(slot, "messages", None) or []
+    tail = rows[-appended:] if appended <= len(rows) else rows
+    for row in reversed(tail):
+        if not isinstance(row, dict) or row.get("role") != "assistant":
+            continue
+        text = _message_text(row.get("content"))
+        if text:
+            return text[:8000]
+    return None
+
+
 def _recovery_successor(slot: Any, turn: Any) -> Any | None:
     """Return the turn the runner handed this run to, or None if there is none.
 
@@ -1918,7 +1999,9 @@ async def _watch_execution(
             baseline_total = int(getattr(live, "total_messages", 0))
             turn = successor
         outcome, error = _settle_args()
-        await _settle_task(store, task_id, execution_id, outcome, error)
+        live = getattr(state, "_slots", {}).get(slot_key) or slot
+        summary = _assistant_reply(live, baseline_total) if live is not None else None
+        await _settle_task(store, task_id, execution_id, outcome, error, summary=summary)
         return
 
     # Give the queued turn a moment to actually start before treating idle as done.
@@ -1933,7 +2016,14 @@ async def _watch_execution(
 
         if not getattr(live, "running", False):
             outcome, error = _settled_outcome(live, None, baseline_total, stop_gen)
-            await _settle_task(store, task_id, execution_id, outcome, error)
+            await _settle_task(
+                store,
+                task_id,
+                execution_id,
+                outcome,
+                error,
+                summary=_assistant_reply(live, baseline_total),
+            )
             return
 
         await asyncio.sleep(3)
@@ -1947,11 +2037,12 @@ async def _settle_task(
     execution_id: str,
     outcome: str,
     error: str | None = None,
+    summary: str | None = None,
 ) -> None:
     """Settle a kanban task execution."""
 
     def updater(task: TaskRecord) -> TaskRecord:
-        return settle_execution(task, execution_id, outcome, error)
+        return settle_execution(task, execution_id, outcome, error, summary)
 
     await asyncio.to_thread(store.update_task, task_id, updater)
     logger.info("kanban: task %s settled as %s", task_id[:8], outcome)
