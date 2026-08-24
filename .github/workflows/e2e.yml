@@ -45,7 +45,10 @@ jobs:
       - name: Static checks (manifest schema, backend compile, UI parse)
         run: |
           python .github/ci/static_checks.py
-          node --check ui/index.mjs
+          cd ui
+          npm ci
+          npm run build
+          node --check dist/index.mjs
 
       - name: Install this app into KiroCrew (the end-user path)
         run: |

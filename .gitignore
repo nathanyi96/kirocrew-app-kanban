@@ -1,6 +1,8 @@
 # Install artifacts the gateway writes into an installed copy of this app.
 # Committing them causes stale-version display and path bugs on other machines.
 /build
+/ui/dist
+/ui/node_modules
 /release-info
 .app_secret
 app-crons.json

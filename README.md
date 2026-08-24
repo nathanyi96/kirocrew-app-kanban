@@ -108,9 +108,21 @@ disable→enable cycle also works. UI-only changes reload without either.
 ```
 app.json            manifest — routes hook, permissions, sidebar page
 backend/
-  routes.py         the model, the board file, the route table, the run logic
+  routes.py         gateway-hook entry point and route table
+  models.py         TaskRecord and ExecutionRecord contracts
+  serialization.py  JSON boundary helpers
+  store.py           atomic board persistence
+  services/
+    task_service.py       pure task transitions
+    execution_service.py  execution predicates/labels
+    chat_service.py       continue an existing Chat slot from the board
+    task_runner_service.py Task Runner integration helpers
+    engine_routing.py     Auto engine selection
 ui/
-  index.mjs         the whole UI: one ESM module, no build step
+  src/               multi-file React/ESM source
+  dist/index.mjs    Vite output loaded by KiroCrew
+  package.json      UI build scripts
+  vite.config.mjs   host-externalized ESM bundle config
   icon.svg          sidebar icon
 ```
 
@@ -121,12 +133,12 @@ ui/
 aiohttp router directly — the pattern builtin apps use — would silently never
 dispatch, because the app RouteRegistry catch-all shadows it.
 
-**It is one file on purpose.** The app module loader gives a hook exactly one
-module, loaded by file path under a synthetic name with no parent package and no
-`sys.path` entry, so `from .store import …` fails at load with
-`No module named '_kirocrew_app_kanban'` — and a failed route module is only
-visible as a 404 on every endpoint. A single module is the shape the loader
-actually supports.
+`backend.routes:register_routes` remains the hook entry required by the
+manifest. The route module is intentionally the compatibility boundary for
+KiroCrew's isolated hook loader; domain/service modules can be added behind it
+as the backend is decomposed. The UI follows the official App Kit layout: edit
+files under `ui/src/`, keep React and the App SDK external, and run `npm run
+build` to produce `ui/dist/index.mjs`.
 
 The board lives in the app's own writable data directory
 (`ctx.data_dir/board/board.json`), written with a temp-file rename so a crash
@@ -157,11 +169,22 @@ purpose, each with a fallback:
 
 ### UI
 
-One ESM module against the host import map (`react`, `react/jsx-runtime`,
-`@kirocrew/app-sdk`). That means no Tailwind and no `@dnd-kit`, so styling is
-inline against the theme tokens (`var(--bg)`, `var(--text)`, `var(--border)`, …
-each with a fallback) and dragging uses native HTML5 drag events. The board polls
-every 5s, which is how a card that settles in the background updates on its own.
+The UI is a Vite-built ESM app against the host import map (`react`,
+`react/jsx-runtime`, `lucide-react`, and `@kirocrew/app-sdk`). React and the SDK
+are externalized so the bundle uses the dashboard's React instance. Source is
+organized by responsibility under `ui/src/`: API client, domain constants,
+formatting, shared components, and the task-detail feature. Styling remains
+inline against theme tokens and dragging uses native HTML5 events. The board
+polls every 5s, which is how a card that settles in the background updates on
+its own.
+
+Build locally with:
+
+```bash
+cd ui
+npm install
+npm run build
+```
 
 Modals use `position: absolute` inside a `position: relative` root — an app UI
 mounts directly into the dashboard DOM, so `position: fixed` would cover the
