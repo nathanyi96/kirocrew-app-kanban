@@ -1,7 +1,7 @@
 {
   "name": "kanban",
   "displayName": "Kanban",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "An outcome-first agent task board with durable results, verification evidence, artifacts, and bounded goal loops.",
   "author": "nathanyi96",
   "license": "MIT",

@@ -81,6 +81,17 @@ check(
 s, body = call(
     "POST",
     "/api/apps/kanban/tasks",
+    {"prompt": "Invalid eval metadata", "metadata": {"workspace_dir": 42}},
+)
+check(
+    "create rejects non-string workspace metadata",
+    s == 400 and body.get("code") == "metadata_invalid",
+    f"status={s} {str(body)[:120]}",
+)
+
+s, body = call(
+    "POST",
+    "/api/apps/kanban/tasks",
     {"prompt": "Plan a multi-step release workflow", "engine": "task_runner"},
 )
 engine_tid = body.get("id", "") if isinstance(body, dict) else ""
@@ -104,12 +115,21 @@ s, body = call(
             "max_minutes": 30,
             "token_budget": 25000,
         },
+        "metadata": {
+            "workspace_dir": "/tmp/kanban-eval-smoke",
+            "eval_suite": "ci-smoke",
+        },
     },
 )
 goal_tid = body.get("id", "") if isinstance(body, dict) else ""
 check("create bounded goal -> 201", s == 201, f"status={s}")
 check("goal loop forces task runner", body.get("engine") == "task_runner", str(body)[:160])
 check("goal criteria persist", len(body.get("goal", {}).get("criteria", [])) == 2, str(body)[:160])
+check(
+    "prepared workspace metadata persists",
+    body.get("metadata", {}).get("workspace_dir") == "/tmp/kanban-eval-smoke",
+    str(body)[:160],
+)
 
 s, body = call("POST", "/api/apps/kanban/tasks", {"prompt": "CI smoke task"})
 tid = body.get("id", "") if isinstance(body, dict) else ""

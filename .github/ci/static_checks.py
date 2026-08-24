@@ -69,9 +69,10 @@ if errors:
         print(f"  ERROR: {e}")
     sys.exit(1)
 
-for backend_file in sorted((ROOT / "backend").rglob("*.py")):
-    if "__pycache__" not in backend_file.parts:
-        py_compile.compile(str(backend_file), doraise=True)
+for source_root in (ROOT / "backend", ROOT / "evals"):
+    for source_file in sorted(source_root.rglob("*.py")):
+        if "__pycache__" not in source_file.parts:
+            py_compile.compile(str(source_file), doraise=True)
 
 evidence = check_no_unscoped_media()
 if evidence:

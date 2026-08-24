@@ -108,17 +108,25 @@ with sync_playwright() as p:
     # page and intercept pointer events. Dismiss them before interacting.
     for _ in range(20):
         page.wait_for_timeout(500)
-        skip_all = page.get_by_role("button", name="Skip all", exact=True)
+        # Current Hosts render this as "Skip all →" while older builds exposed
+        # exactly "Skip all". Match the stable accessible-name prefix so a
+        # cosmetic arrow cannot leave the customization modal over the app nav.
+        skip_all = page.get_by_role("button", name=re.compile(r"^Skip all"))
         if skip_all.count() > 0 and skip_all.first.is_visible():
             skip_all.first.click()
             continue
         dialogs = page.locator('[role="dialog"]')
+        # Do not exit on the first quiet poll. The customization dialog is
+        # mounted asynchronously after the dashboard is already interactive,
+        # so an early break races with it and leaves it over the app nav.
         if dialogs.count() == 0 or not dialogs.first.is_visible():
-            break
+            continue
         page.keyboard.press("Escape")
         close = page.locator('[role="dialog"] [aria-label="Close"]')
         if close.count() > 0 and close.first.is_visible():
             close.first.click()
+
+    expect(page.locator('[role="dialog"]')).to_have_count(0, timeout=5000)
 
     # Step 1: show how a user enters the installed app from the host dashboard.
     app_link = page.get_by_role("button", name="Kanban", exact=True)

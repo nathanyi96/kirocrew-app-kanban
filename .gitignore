@@ -12,6 +12,7 @@ data/
 # Temporary review evidence is committed under docs/e2e/<pr-number> until a
 # durable PR attachment workflow is adopted.
 /e2e-shots/
+/eval-runs/
 
 # Python
 __pycache__/
