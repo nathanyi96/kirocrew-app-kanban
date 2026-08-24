@@ -70,14 +70,29 @@ def start_execution(task: TaskRecord, engine: str) -> tuple[TaskRecord, Executio
     ), execution
 
 
-def settle_execution(task: TaskRecord, execution_id: str, outcome: str, error: str | None = None) -> TaskRecord:
+def settle_execution(
+    task: TaskRecord,
+    execution_id: str,
+    outcome: str,
+    error: str | None = None,
+    summary: str | None = None,
+) -> TaskRecord:
     now = time.time()
+    clean_summary = summary.strip()[:8000] if isinstance(summary, str) and summary.strip() else None
     latest_unsettled = next((ex.id for ex in reversed(task.executions) if not ex.result), None)
     owns_status = latest_unsettled is None or latest_unsettled == execution_id
     executions = []
     for ex in task.executions:
         if ex.id == execution_id:
-            executions.append(replace(ex, ended_at=now, result=outcome, error=error))
+            executions.append(
+                replace(
+                    ex,
+                    ended_at=now,
+                    result=outcome,
+                    error=error,
+                    summary=clean_summary,
+                )
+            )
         else:
             executions.append(ex)
     return replace(
@@ -85,8 +100,31 @@ def settle_execution(task: TaskRecord, execution_id: str, outcome: str, error: s
         status=RESULT_TO_STATUS.get(outcome, "failed") if owns_status else task.status,
         updated_at=now,
         executions=executions,
-        activity=_activity(task, "settled", f"Execution {outcome}", execution_id),
+        activity=_activity(
+            task,
+            "settled",
+            clean_summary.splitlines()[0] if clean_summary else f"Execution {outcome}",
+            execution_id,
+        ),
     )
+
+
+def update_execution_progress(
+    task: TaskRecord,
+    execution_id: str,
+    progress: str | None,
+    progress_detail: str | None,
+) -> TaskRecord:
+    """Persist a Task Runner's latest concise progress without adding timeline noise."""
+    executions = [
+        replace(
+            ex,
+            progress=progress if ex.id == execution_id else ex.progress,
+            progress_detail=progress_detail if ex.id == execution_id else ex.progress_detail,
+        )
+        for ex in task.executions
+    ]
+    return replace(task, updated_at=time.time(), executions=executions)
 
 
 def attach_session_key(task: TaskRecord, execution_id: str, session_key: str) -> TaskRecord:

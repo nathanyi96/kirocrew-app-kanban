@@ -17,6 +17,7 @@ class ExecutionRecord:
     runner_id: str | None = None
     progress: str | None = None
     progress_detail: str | None = None
+    summary: str | None = None
 
 
 @dataclass
