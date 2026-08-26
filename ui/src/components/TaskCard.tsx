@@ -1,7 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs } from 'react/jsx-runtime'
 import lucide from 'lucide-react'
-import { T } from '../theme.ts'
-import { ENGINE_LABELS, taskEngine } from '../lib/task-utils.ts'
+import { T, toneColor, toneSurface } from '../theme.ts'
+import { ENGINE_LABELS, taskEngine, taskProgress, taskResultPacket, taskRunBlocker, taskStateMeta } from '../lib/task-utils.ts'
 import { relativeTime } from '../lib/formatting.ts'
 import EngineBadge from './EngineBadge.tsx'
 
@@ -13,9 +13,15 @@ export default function TaskCard({ task, onClick, onRun, onOpenEngine, onMoveMen
   const running = task.status === 'running'
   const failed = task.status === 'failed'
   const hasTarget = Boolean(latest && (latest.session_key || latest.runner_id))
-  const stripe = failed ? T.danger : running ? T.warn : task.status === 'done' ? T.ok : T.borderStrong
+  const state = taskStateMeta(task)
+  const progress = taskProgress(task)
+  const packet = taskResultPacket(task)
+  const runBlocker = taskRunBlocker(task)
+  const stateColor = toneColor(state.tone)
+  const stripe = stateColor || (failed ? T.danger : running ? T.warn : task.status === 'done' ? T.ok : T.borderStrong)
 
   return _jsxs('div', {
+    'data-task-id': task.id,
     draggable: !running,
     onDragStart: e => { e.dataTransfer.setData('text/task-id', task.id); e.dataTransfer.effectAllowed = 'move' },
     onClick: () => onClick(task),
@@ -30,8 +36,8 @@ export default function TaskCard({ task, onClick, onRun, onOpenEngine, onMoveMen
         task.refining && _jsxs('span', { title: 'Refining…', style: { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, color: T.muted, flexShrink: 0 }, children: [_jsx(Loader2, { size: 10, style: { animation: 'kanban-spin 1s linear infinite' } }), 'Refining…'] }),
         task.priority === 'high' && _jsx('span', { style: { flexShrink: 0, fontSize: 10, fontWeight: 600, textTransform: 'uppercase', color: T.danger, background: 'rgba(239,68,68,0.12)', padding: '2px 6px', borderRadius: 4 }, children: 'High' }),
       ] }),
-      (task.description || task.prompt) && _jsx('p', { style: { margin: '6px 0 0', fontSize: 11.5, color: T.muted, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }, children: task.description || task.prompt }),
-      _jsxs('div', { style: { marginTop: 7, display: 'flex', alignItems: 'center', gap: 6 }, children: [_jsx(EngineBadge, { engine }), _jsx('span', { style: { fontSize: 10, color: T.muted }, children: engine === 'auto' ? 'will route on run' : 'current engine' })] }),
+      packet.summary && _jsx('p', { style: { margin: '7px 0 0', fontSize: 11, lineHeight: 1.45, color: T.muted, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }, children: packet.summary }),
+      _jsxs('div', { style: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }, children: [_jsx(EngineBadge, { engine }), _jsx('span', { style: { padding: '2px 6px', borderRadius: 999, background: toneSurface(state.tone), color: stateColor, fontSize: 9, fontWeight: 700 }, children: state.label }), _jsx('span', { style: { marginLeft: 'auto', fontSize: 9, color: T.muted }, children: progress.label })] }),
       failed && latest?.error && _jsxs('p', { style: { margin: '6px 0 0', fontSize: 11, color: T.danger, display: 'flex', gap: 4, alignItems: 'flex-start', overflow: 'hidden' }, children: [_jsx(AlertCircle, { size: 11 }), _jsx('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' }, children: latest.error })] }),
       _jsxs('div', { style: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: T.muted, flexWrap: 'wrap' }, children: [
         _jsxs('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 3 }, children: [_jsx(Clock, { size: 10 }), relativeTime(task.updated_at)] }),
@@ -41,7 +47,7 @@ export default function TaskCard({ task, onClick, onRun, onOpenEngine, onMoveMen
       _jsxs('div', { style: { marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 10 }, children: [
         hasTarget && _jsxs('button', { type: 'button', onClick: e => { e.stopPropagation(); onOpenEngine(task, latest) }, title: `Open ${ENGINE_LABELS[engine] || 'engine'}`, style: { background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: T.accent }, children: [engine === 'task_runner' ? _jsx(Play, { size: 11 }) : _jsx(MessageSquare, { size: 11 }), engine === 'task_runner' ? 'Open Task Runner' : running ? 'Watch live' : 'View session'] }),
         !running && _jsx('button', { type: 'button', onClick: e => { e.stopPropagation(); onMoveMenu(task) }, title: 'Move to another column', style: { background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, fontSize: 11, color: T.muted }, children: 'Move' }),
-        !running && onRun && _jsxs('button', { type: 'button', disabled: runBusy, onClick: e => { e.stopPropagation(); onRun(task) }, title: 'Run this task', style: { marginLeft: 'auto', background: 'transparent', border: 'none', cursor: runBusy ? 'wait' : 'pointer', padding: 0, opacity: runBusy ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: T.muted }, children: [runBusy ? _jsx(Loader2, { size: 11, style: { animation: 'kanban-spin 1s linear infinite' } }) : _jsx(Play, { size: 11, fill: 'currentColor' }), task.executions.length ? 'Run again' : 'Run'] }),
+        !running && !runBlocker && onRun && _jsxs('button', { type: 'button', disabled: runBusy, onClick: e => { e.stopPropagation(); onRun(task) }, title: 'Run this task', style: { marginLeft: 'auto', background: 'transparent', border: 'none', cursor: runBusy ? 'wait' : 'pointer', padding: 0, opacity: runBusy ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: T.muted }, children: [runBusy ? _jsx(Loader2, { size: 11, style: { animation: 'kanban-spin 1s linear infinite' } }) : _jsx(Play, { size: 11, fill: 'currentColor' }), task.executions.length ? 'Run again' : 'Run'] }),
       ] }),
     ],
   })

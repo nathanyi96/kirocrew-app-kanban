@@ -20,3 +20,33 @@ export const actionPill = {
   display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none',
   borderRadius: 7, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
 }
+
+export const toneColor = tone => tone === 'ok'
+  ? T.ok
+  : tone === 'danger'
+    ? T.danger
+    : tone === 'info'
+      ? T.info
+      : tone === 'warn'
+        ? T.warn
+        : T.muted
+
+export const toneSurface = tone => tone === 'ok'
+  ? 'rgba(34,197,94,0.11)'
+  : tone === 'danger'
+    ? 'rgba(239,68,68,0.11)'
+    : tone === 'info'
+      ? 'rgba(8,145,178,0.11)'
+      : tone === 'warn'
+        ? 'rgba(234,179,8,0.11)'
+        : 'rgba(127,127,136,0.11)'
+
+export const toneBorder = tone => tone === 'ok'
+  ? 'rgba(34,197,94,0.38)'
+  : tone === 'danger'
+    ? 'rgba(239,68,68,0.38)'
+    : tone === 'info'
+      ? 'rgba(8,145,178,0.38)'
+      : tone === 'warn'
+        ? 'rgba(234,179,8,0.38)'
+        : 'rgba(127,127,136,0.3)'

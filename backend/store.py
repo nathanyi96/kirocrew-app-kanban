@@ -13,13 +13,14 @@ from kiro_crew.platform_compat import file_lock
 
 
 class BoardStore:
-    def __init__(self, root: Path, *, from_dict: Callable[[dict[str, Any]], Any], to_dict: Callable[[Any], dict[str, Any]]):
+    def __init__(self, root: Path, *, from_dict: Callable[[dict[str, Any]], Any], to_dict: Callable[[Any], dict[str, Any]], version: int = 1):
         self._root = root.expanduser()
         self._root.mkdir(parents=True, exist_ok=True)
         self._board_path = self._root / 'board.json'
         self._lock_path = self._root / '.lock'
         self._from_dict = from_dict
         self._to_dict = to_dict
+        self._version = version
 
     def load(self) -> list[Any]:
         with self._locked():
@@ -65,7 +66,7 @@ class BoardStore:
         return [self._from_dict(item) for item in raw.get('tasks', [])]
 
     def _write(self, tasks: list[Any]) -> None:
-        atomic_write(self._board_path, json.dumps({'version': 1, 'tasks': [self._to_dict(task) for task in tasks]}, indent=2, ensure_ascii=False))
+        atomic_write(self._board_path, json.dumps({'version': self._version, 'tasks': [self._to_dict(task) for task in tasks]}, indent=2, ensure_ascii=False))
 
     @contextlib.contextmanager
     def _locked(self):

@@ -155,7 +155,7 @@ with sync_playwright() as p:
     # The new card is newest and therefore first in the To do column. Selecting
     # the card shape instead of its title keeps this stable while the background
     # namer replaces the provisional title.
-    task_card = page.locator('[role="button"][draggable="true"]').first
+    task_card = page.locator(f'[data-task-id="{task_id}"]')
     expect(task_card).to_be_visible(timeout=15000)
     page.screenshot(path=str(OUT / "04-task-created.png"), full_page=True)
 
@@ -167,22 +167,20 @@ with sync_playwright() as p:
     # The drawer leads with current agent state and resource shortcuts. Raw
     # description/prompt editors do not take over the primary layout.
     expect(detail.get_by_text("Ready", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_role("tab", name="Core task")).to_have_attribute("aria-selected", "true")
-    expect(detail.get_by_role("tab", name="Steps")).to_be_visible(timeout=15000)
-    expect(detail.get_by_role("tab", name="Files and artifacts")).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("tab", name="Outcome")).to_have_attribute("aria-selected", "true")
+    expect(detail.get_by_role("tab", name="Goal and verification")).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("tab", name="Artifacts")).to_be_visible(timeout=15000)
     expect(detail.get_by_role("tab", name="Changes and diffs")).to_be_visible(timeout=15000)
-    expect(detail.get_by_role("tab", name="Markdown and notes")).to_be_visible(timeout=15000)
-    expect(detail.get_by_role("tab", name="Activity")).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Right now", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Latest result", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Key points", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Next move", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_role("tab", name="Audit trail")).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Outcome pending", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Verification", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Outputs", exact=True)).to_be_visible(timeout=15000)
     expect(detail.get_by_role("textbox", name="Reply to agent")).to_be_disabled()
     expect(detail.get_by_role("textbox", name="Description")).to_have_count(0)
     expect(detail.get_by_role("textbox", name="Execution prompt")).to_have_count(0)
-    detail.get_by_role("tab", name="Activity").click()
+    detail.get_by_role("tab", name="Audit trail").click()
     expect(detail.get_by_text("Activity", exact=True)).to_be_visible(timeout=15000)
-    detail.get_by_role("tab", name="Core task").click()
+    detail.get_by_role("tab", name="Outcome").click()
     # The drawer intentionally animates in; assert its final geometry after
     # the transition instead of sampling the panel halfway through the slide.
     page.wait_for_timeout(250)
@@ -238,7 +236,7 @@ with sync_playwright() as p:
     )
     assert finished["status"] == "done", f"task did not succeed: {finished}"
 
-    final_card = page.locator('[role="button"]').filter(has_text=finished["title"]).first
+    final_card = page.locator(f'[data-task-id="{task_id}"]')
     expect(final_card).to_be_visible(timeout=15000)
     expect(page.get_by_text("Done", exact=True).first).to_be_visible(timeout=15000)
     page.screenshot(path=str(OUT / "08-task-done.png"), full_page=True)
@@ -246,11 +244,13 @@ with sync_playwright() as p:
     final_card.click()
     detail = page.get_by_role("dialog", name="Task detail")
     expect(detail).to_be_visible(timeout=15000)
-    expect(detail.get_by_text("Succeeded", exact=True)).to_be_visible(timeout=15000)
-    detail.get_by_role("tab", name="Steps").click()
-    expect(detail.get_by_text("Agent steps", exact=True)).to_be_visible(timeout=15000)
-    expect(detail.get_by_text(re.compile(r"^Run \d+$")).first).to_be_visible(timeout=15000)
-    detail.get_by_role("tab", name="Core task").click()
+    expect(detail.get_by_text("Needs review", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Review outcome", exact=True)).to_be_visible(timeout=15000)
+    detail.get_by_role("tab", name="Goal and verification").click()
+    expect(detail.get_by_text("One-run task", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text("Attempts", exact=True)).to_be_visible(timeout=15000)
+    expect(detail.get_by_text(re.compile(r"^Attempt \d+$")).first).to_be_visible(timeout=15000)
+    detail.get_by_role("tab", name="Outcome").click()
     expect(detail.get_by_role("button", name="Open the chat")).to_be_visible(
         timeout=15000
     )
@@ -269,13 +269,21 @@ with sync_playwright() as p:
         page.wait_for_url("**/apps/kanban", timeout=15000)
         expect(page.get_by_text("Kanban", exact=True).first).to_be_visible(timeout=15000)
 
-    def create_ui_task(task_prompt: str, engine: str) -> dict:
+    def create_ui_task(task_prompt: str, engine: str, *, loop: bool = False) -> dict:
         open_kanban()
         page.get_by_role("button", name="New task", exact=True).click()
         prompt_box = page.get_by_placeholder("What do you want done?")
         expect(prompt_box).to_be_visible(timeout=15000)
         prompt_box.fill(task_prompt)
         page.get_by_role("combobox").select_option(engine)
+        if loop:
+            page.get_by_role("switch", name="Continue until verified").click()
+            expect(page.get_by_role("combobox")).to_be_disabled()
+            page.get_by_role("textbox", name="Goal acceptance criteria").fill(
+                "The requested outcome is implemented\n"
+                "Relevant checks pass without regressions\n"
+                "The final result and artifacts are summarized"
+            )
         with page.expect_response(
             lambda response: response.request.method == "POST"
             and response.url.endswith("/api/apps/kanban/tasks")
@@ -289,7 +297,7 @@ with sync_playwright() as p:
     task_runner_prompt = "Task Runner E2E: complete multiple steps and report the result."
     task_runner_created = create_ui_task(task_runner_prompt, "task_runner")
     task_runner_id = task_runner_created["id"]
-    task_runner_card = page.locator("[role=\"button\"]").filter(has_text=task_runner_prompt).first
+    task_runner_card = page.locator(f'[data-task-id="{task_runner_id}"]')
     expect(task_runner_card).to_be_visible(timeout=15000)
     task_runner_card.click()
     task_runner_detail = page.get_by_role("dialog", name="Task detail")
@@ -313,7 +321,7 @@ with sync_playwright() as p:
     )
     task_runner_run_id = task_runner_started["executions"][-1]["runner_id"]
     open_kanban()
-    task_runner_card = page.locator("[role=\"button\"]").filter(has_text=task_runner_prompt).first
+    task_runner_card = page.locator(f'[data-task-id="{task_runner_id}"]')
     task_runner_card.click()
     task_runner_detail = page.get_by_role("dialog", name="Task detail")
     expect(task_runner_detail.get_by_role("button", name="Open the task runner")).to_be_visible(
@@ -341,7 +349,7 @@ with sync_playwright() as p:
     autopilot_prompt = "Autopilot E2E: plan a concise two-step review and show the approval plan."
     autopilot_created = create_ui_task(autopilot_prompt, "autopilot")
     autopilot_id = autopilot_created["id"]
-    autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
+    autopilot_card = page.locator(f'[data-task-id="{autopilot_id}"]')
     expect(autopilot_card).to_be_visible(timeout=15000)
     autopilot_card.click()
     autopilot_detail = page.get_by_role("dialog", name="Task detail")
@@ -364,7 +372,7 @@ with sync_playwright() as p:
         timeout=30,
     )
     open_kanban()
-    autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
+    autopilot_card = page.locator(f'[data-task-id="{autopilot_id}"]')
     autopilot_card.click()
     autopilot_detail = page.get_by_role("dialog", name="Task detail")
     expect(autopilot_detail.get_by_role("button", name="Open the chat")).to_be_visible(
@@ -386,7 +394,7 @@ with sync_playwright() as p:
         timeout=30,
     )
     assert autopilot_finished["executions"][-1].get("engine") == "autopilot"
-    autopilot_card = page.locator("[role=\"button\"]").filter(has_text=autopilot_prompt).first
+    autopilot_card = page.locator(f'[data-task-id="{autopilot_id}"]')
     autopilot_card.click()
     autopilot_detail = page.get_by_role("dialog", name="Task detail")
     expect(autopilot_detail.get_by_text("Autopilot", exact=True).first).to_be_visible(timeout=15000)
@@ -398,7 +406,7 @@ with sync_playwright() as p:
     enable_prompt_text = "Task Runner E2E: prompt before enablement."
     enable_prompt_created = create_ui_task(enable_prompt_text, "task_runner")
     enable_prompt_id = enable_prompt_created["id"]
-    enable_prompt_card = page.locator("[role=\"button\"]").filter(has_text=enable_prompt_text).first
+    enable_prompt_card = page.locator(f'[data-task-id="{enable_prompt_id}"]')
     expect(enable_prompt_card).to_be_visible(timeout=15000)
     enable_prompt_card.click()
     enable_prompt_detail = page.get_by_role("dialog", name="Task detail")
@@ -425,6 +433,24 @@ with sync_playwright() as p:
     enable_prompt_dialog.get_by_role("button", name="Not now", exact=True).click()
     page.unroute(f"**/api/apps/kanban/tasks/{enable_prompt_id}/run")
 
+    # Step 11: prove the bounded loop can be configured from the lightweight
+    # create flow and is visible as a durable goal contract in the drawer.
+    goal_prompt = "Keep improving the release summary until every acceptance check passes."
+    goal_created = create_ui_task(goal_prompt, "task_runner", loop=True)
+    goal_id = goal_created["id"]
+    assert goal_created.get("goal", {}).get("mode") == "loop"
+    assert goal_created.get("engine") == "task_runner"
+    goal_card = page.locator(f'[data-task-id="{goal_id}"]')
+    expect(goal_card).to_be_visible(timeout=15000)
+    goal_card.click()
+    goal_detail = page.get_by_role("dialog", name="Task detail")
+    goal_detail.get_by_role("tab", name="Goal and verification").click()
+    expect(goal_detail.get_by_text("Done means", exact=True)).to_be_visible(timeout=15000)
+    expect(goal_detail.get_by_text("0/3", exact=True)).to_be_visible(timeout=15000)
+    expect(goal_detail.get_by_text("0 of 3 verified", exact=True).first).to_be_visible(timeout=15000)
+    expect(goal_detail.get_by_role("button", name="Continue goal")).to_be_visible(timeout=15000)
+    page.screenshot(path=str(OUT / "20-goal-loop-detail.png"), full_page=True)
+
     browser.close()
 
 expected_shots = [f"{index:02d}-{name}.png" for index, name in enumerate([
@@ -447,6 +473,7 @@ expected_shots = [f"{index:02d}-{name}.png" for index, name in enumerate([
     "autopilot-completed-detail",
     "task-runner-enable-before",
     "task-runner-enable-prompt",
+    "goal-loop-detail",
 ], start=1)]
 shots = sorted(f.name for f in OUT.glob("*.png"))
 missing = sorted(set(expected_shots) - set(shots))
@@ -457,7 +484,7 @@ if missing:
 # Build the review GIF from visibly different frames of this exact successful
 # journey. Repeatedly capturing one static screen technically creates an
 # animated GIF, but it looks frozen in a PR description and communicates no
-# user flow. These frames cover Focus, Chat, Task Runner, and Autopilot.
+# user flow. These frames cover Outcome, the goal loop, Chat, Task Runner, and Autopilot.
 gif_frame_names = [
     "04-task-created.png",
     "05-task-detail-before-run.png",
@@ -468,13 +495,14 @@ gif_frame_names = [
     "11-task-runner-detail.png",
     "12-task-runner-running.png",
     "13-task-runner-host.png",
+    "20-goal-loop-detail.png",
     "14-autopilot-detail.png",
     "15-autopilot-running.png",
     "16-autopilot-session.png",
     "17-autopilot-completed-detail.png",
     "19-task-runner-enable-prompt.png",
 ]
-gif_durations = [800, 1400, 900, 1100, 800, 1400, 1100, 1000, 1100, 1000, 900, 1100, 1300, 1400]
+gif_durations = [800, 1400, 900, 1100, 800, 1400, 1100, 1000, 1100, 1300, 1000, 900, 1100, 1300, 1400]
 gif_frames = []
 for frame_name in gif_frame_names:
     with Image.open(OUT / frame_name) as frame:
