@@ -2,6 +2,7 @@ import { jsx as _jsx, jsxs as _jsxs } from 'react/jsx-runtime'
 import lucide from 'lucide-react'
 import { T, actionPill, toneBorder, toneSurface } from '../theme.ts'
 import { taskArtifacts, taskResultPacket, taskRunBlocker, taskStateMeta, taskVerification } from '../lib/task-utils.ts'
+import Markdown from '../components/Markdown.tsx'
 import VerificationList from './VerificationList.tsx'
 
 const { AlertTriangle, ArrowRight, CheckCircle2, ExternalLink, FileText, GitCommitHorizontal, Sparkles } = lucide
@@ -23,7 +24,6 @@ export default function OutcomePane({ task, onAccept, onContinue, onRequestChang
   const meta = packetMeta(packet.status)
   const featured = artifacts.filter(item => packet.artifact_ids?.includes(item.id)).slice(0, 4)
   const outputs = featured.length ? featured : artifacts.slice(0, 4)
-  const hasResult = Boolean(packet.summary || task.executions?.length)
   const working = task.status === 'running'
   const canAccept = !working && ['needs_review', 'verified'].includes(packet.status) && state.state !== 'achieved'
   const canContinue = !taskRunBlocker(task)
@@ -31,7 +31,9 @@ export default function OutcomePane({ task, onAccept, onContinue, onRequestChang
   return _jsxs('div', { 'aria-label': 'Task outcome', style: { display: 'flex', flexDirection: 'column', gap: 18 }, children: [
     _jsxs('section', { style: { padding: 14, borderRadius: 12, border: `1px solid ${toneBorder(meta.tone)}`, background: `linear-gradient(140deg, ${toneSurface(meta.tone)}, transparent 72%)` }, children: [
       _jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 7 }, children: [_jsx(meta.Icon, { size: 15, style: { color: meta.color } }), _jsx('span', { style: { color: meta.color, fontSize: 10, fontWeight: 750, textTransform: 'uppercase', letterSpacing: '0.06em' }, children: meta.label }), packet.changed_files > 0 && _jsxs('span', { style: { marginLeft: 'auto', color: T.muted, fontSize: 9 }, children: [packet.changed_files, ' changed outputs'] })] }),
-      _jsx('p', { style: { margin: '10px 0 0', color: hasResult ? T.strong : T.muted, fontSize: 13, lineHeight: 1.6, fontWeight: hasResult ? 560 : 400, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }, children: packet.summary || (working ? 'The agent is working toward the first verified outcome.' : 'Run this task to produce a result and supporting evidence.') }),
+      packet.summary
+        ? _jsx(Markdown, { text: packet.summary, style: { marginTop: 10, fontWeight: 500 } })
+        : _jsx('p', { style: { margin: '10px 0 0', color: T.muted, fontSize: 13, lineHeight: 1.6, overflowWrap: 'anywhere' }, children: working ? 'The agent is working toward the first verified outcome.' : 'Run this task to produce a result and supporting evidence.' }),
     ] }),
     _jsxs('section', { children: [
       _jsxs('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 9 }, children: [_jsx('h3', { style: heading, children: 'Verification' }), checks.length > 0 && _jsxs('span', { style: { marginLeft: 'auto', color: T.muted, fontSize: 9 }, children: [checks.filter(check => check.status === 'passed').length, '/', checks.filter(check => check.required !== false).length, ' passed'] })] }),
