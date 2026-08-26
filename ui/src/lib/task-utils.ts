@@ -44,9 +44,30 @@ const ACTIVITY_TITLES = {
   accepted: 'Outcome accepted',
 }
 
+// The FIRST non-empty line of an agent summary, reduced to prose.
+//
+// The outcome pane renders that same summary as real markdown, so this is the
+// one place the raw syntax would still be visible: the impact header is a single
+// line and cannot host block elements, which is why it STRIPS the markup rather
+// than rendering it. Without the inline pass a heading- or emphasis-heavy result
+// reads as `` `main` and **three fixes** `` right above a pane that renders the
+// identical text properly, which looks like the renderer failed.
+//
+// Images before links, because an image is a link with a leading `!` and the
+// link pass would otherwise leave the `!` behind.
 const cleanLine = value => String(value || '')
   .split('\n')
-  .map(line => line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s*)/, '').trim())
+  .map(line => line
+    .replace(/^\s*>+\s*/, '')
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s*)/, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/`+([^`]*)`+/g, '$1')
+    .replace(/(\*\*\*|___)(.*?)\1/g, '$2')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(?=\S)(.*?)(?<=\S)\1/g, '$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .trim())
   .find(Boolean) || ''
 
 const activityStatus = (kind, summary) => {

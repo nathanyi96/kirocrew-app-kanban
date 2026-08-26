@@ -1,24 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <!-- Cards draining through lanes. Card pitch is deliberately tight (a 0.75 gap
-       against a 2.7 card) so each lane reads as one mass rather than dissolving
-       into loose pills, and the descending heights give the mark a staircase
-       silhouette that still resolves at 16px: work piles up in the queue and
-       drains to the right.
+  <!-- Cards draining through lanes: 3/2/1 descending left to right, so the
+       silhouette is a staircase and the mark says "work moves and drains" rather
+       than "here is a list". Card count is deliberately low and each card is
+       tall (3.2 against a 1.0 gap): an earlier revision packed four cards per
+       lane and at the 16px sidebar size the lanes fused into one grey block.
+       Exactly one card carries the solid accent, and it is the one running in a
+       real agent session — the distinction this board exists for, since a card
+       here is not just dragged between columns, it executes.
 
-       Exactly one card is solid, and it is the one running in a real agent
-       session — the distinction this board exists for, since a card here is not
-       just dragged between columns, it executes. Saying that with fill rather
-       than an added play glyph is what keeps the mark legible in the sidebar,
-       where such a glyph would be two grey pixels.
-
-       Painted from --ico-a (muted structure) and --ico-b (accent) so the theme
-       cascades in: AppIcon drives idle as (muted, accent) and selected as
-       (accent, text), and hardcoded colours would opt out of both. -->
-  <rect x="3.4" y="4.6" width="5.4" height="2.7" rx="0.95" fill="var(--ico-a, currentColor)" fill-opacity="0.55"/>
-  <rect x="3.4" y="8.05" width="5.4" height="2.7" rx="0.95" fill="var(--ico-a, currentColor)" fill-opacity="0.55"/>
-  <rect x="3.4" y="11.5" width="5.4" height="2.7" rx="0.95" fill="var(--ico-a, currentColor)" fill-opacity="0.55"/>
-  <rect x="3.4" y="14.95" width="5.4" height="2.7" rx="0.95" fill="var(--ico-a, currentColor)" fill-opacity="0.55"/>
-  <rect x="9.3" y="4.6" width="5.4" height="2.7" rx="0.95" fill="var(--ico-b, currentColor)"/>
-  <rect x="9.3" y="8.05" width="5.4" height="2.7" rx="0.95" fill="var(--ico-a, currentColor)" fill-opacity="0.55"/>
-  <rect x="15.2" y="4.6" width="5.4" height="2.7" rx="0.95" fill="var(--ico-b, currentColor)" fill-opacity="0.38"/>
+       COLOURS ARE LITERAL ON PURPOSE. The host resolves an external app's page
+       icon to `<img src="/apps/<name>/ui/icon.svg">` (website/src/App.tsx), and
+       an SVG loaded through <img> is an isolated document: it inherits no CSS
+       custom properties and no `currentColor` from the dashboard. A var()-painted
+       icon therefore falls back to initial black and vanishes on a dark theme,
+       which is exactly what happened to the previous revision of this file.
+       Theme cascade is not available on this path at all, so it is not being
+       traded away here; the two tones are mid-range to hold contrast on a light
+       and a dark sidebar alike, and the settled card sits at 0.62 rather than
+       lower because below that it disappears against white. -->
+  <g fill="#8a90a6">
+    <rect x="3.15" y="6.2" width="5.5" height="3.2" rx="1"/>
+    <rect x="3.15" y="10.4" width="5.5" height="3.2" rx="1"/>
+    <rect x="3.15" y="14.6" width="5.5" height="3.2" rx="1"/>
+    <rect x="9.25" y="10.4" width="5.5" height="3.2" rx="1"/>
+  </g>
+  <rect x="9.25" y="6.2" width="5.5" height="3.2" rx="1" fill="#7c5cff"/>
+  <rect x="15.35" y="6.2" width="5.5" height="3.2" rx="1" fill="#7c5cff" fill-opacity="0.62"/>
 </svg>
