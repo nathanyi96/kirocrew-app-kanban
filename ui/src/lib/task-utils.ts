@@ -70,6 +70,82 @@ const cleanLine = value => String(value || '')
     .trim())
   .find(Boolean) || ''
 
+export { cleanLine }
+
+// The first line of PROSE, which is not the same as the first non-empty line.
+//
+// An agent summary very often opens with a heading — `## Summary` — and taking
+// the first line there renders a card whose entire body is the word "Summary".
+// Headings are therefore skipped while any real content follows, and only used
+// as the answer when the text is nothing but a heading.
+const cleanProse = value => {
+  const lines = String(value || '').split('\n')
+  let headingFallback = ''
+  for (const line of lines) {
+    const isHeading = /^\s*#{1,6}\s/.test(line)
+    const cleaned = cleanLine(line)
+    if (!cleaned) continue
+    if (isHeading) {
+      if (!headingFallback) headingFallback = cleaned
+      continue
+    }
+    return cleaned
+  }
+  return headingFallback
+}
+
+export { cleanProse }
+
+// What the card's one body line says, which depends ENTIRELY on where the task is.
+//
+// The old card read `result_packet.summary` and nothing else, so a card that had
+// never run rendered with no body at all — the state most cards on a board are
+// in, and the one where the user most needs to know what the card is for. Each
+// branch names the most recent thing that happened, and every branch is
+// non-empty as long as the card carries any text at all.
+//
+// `cleanLine` runs on the agent-authored branches because a summary is raw
+// markdown: without it a heading- or emphasis-heavy result leaks `##` and `**`
+// onto the card. The user-authored branches are already plain prose.
+export function cardBody(task) {
+  const latest = task.executions?.length ? task.executions[task.executions.length - 1] : null
+  const packet = taskResultPacket(task)
+  if (task.status === 'running') {
+    return {
+      text: cleanProse(latest?.progress_detail || latest?.progress || packet.summary) || 'The agent is working on this task.',
+      tone: 'live',
+    }
+  }
+  if (task.status === 'failed') {
+    return { text: cleanProse(latest?.error || packet.summary) || 'The latest run needs attention.', tone: 'error' }
+  }
+  if (task.status === 'done') {
+    return { text: cleanProse(packet.summary || latest?.summary) || 'The run finished — review the evidence.', tone: 'result' }
+  }
+  // Never run: the card's own text is the only thing that exists, and it is what
+  // the user wrote, so it needs no markdown stripping.
+  const intent = task.description || task.goal?.objective || task.prompt || ''
+  return { text: intent, tone: 'intent' }
+}
+
+// The one short qualifier on the meta line, or '' when the surrounding chrome
+// already says it. A Backlog card in the Backlog column saying "Not started" is
+// the redundancy this deliberately returns nothing for — and so is a running
+// card saying "Working" next to a Running chip and a spinner.
+export function cardQualifier(task) {
+  const progress = taskProgress(task)
+  // Only a REAL measurement earns space here; the indeterminate label is the
+  // word the chip already carries.
+  if (task.status === 'running') return progress.determinate ? progress.label : ''
+  if (task.status === 'failed') return ''
+  if (task.status === 'done') {
+    const criteria = taskVerification(task).filter(check => check.required !== false)
+    const passed = criteria.filter(check => check.status === 'passed').length
+    return criteria.length ? `${passed}/${criteria.length} verified` : ''
+  }
+  return ''
+}
+
 const activityStatus = (kind, summary) => {
   const normalized = `${kind || ''} ${summary || ''}`.toLowerCase()
   if (normalized.includes('fail')) return 'failed'

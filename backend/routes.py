@@ -186,6 +186,26 @@ except ImportError:
     _serialization_spec.loader.exec_module(_serialization_module)
     _task_to_dict = _serialization_module.task_to_dict
 
+try:
+    from .services import grouping_service as _grouping
+except ImportError:
+    _grouping_path = Path(__file__).with_name("services") / "grouping_service.py"
+    _grouping_spec = importlib.util.spec_from_file_location("_kanban_grouping_service", _grouping_path)
+    if _grouping_spec is None or _grouping_spec.loader is None:
+        raise ImportError(f"Could not load Kanban grouping service: {_grouping_path}")
+    _grouping = importlib.util.module_from_spec(_grouping_spec)
+    sys.modules[_grouping_spec.name] = _grouping
+    _grouping_spec.loader.exec_module(_grouping)
+
+# Project inference reads the gateway's live chat-slot state. Imported
+# defensively for the same reason ``_get_state`` is duck-typed: a host whose
+# internals moved must degrade to "no project inferred", not fail at import and
+# take the whole board down with it.
+try:
+    from kiro_crew.dashboard.handlers._shared import active_project_state as _active_project_state
+except Exception:  # pragma: no cover - host-shape dependent
+    _active_project_state = None
+
 logger = logging.getLogger("kirocrew.app.kanban")
 
 #: Manifest name — the app.json ``name`` and the ``/api/apps/<name>`` prefix.
@@ -1377,6 +1397,10 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         engine="task_runner" if goal is not None and goal.mode == "loop" else engine,
         goal=goal,
     )
+    # The project is captured HERE and stored, not resolved on read: it is
+    # inferred from live chat-slot state that is gone by the time the board is
+    # read back, so a lazy lookup would answer for whatever is open later.
+    task = replace(task, metadata={**task.metadata, **_infer_project_metadata(request)})
     await asyncio.to_thread(store.add_task, task)
     if name_in_background:
         _spawn_namer(request.app, store, task.id, prompt)
@@ -2707,6 +2731,252 @@ async def api_kanban_tasks_reconcile(request: web.Request, ctx: Any) -> web.Resp
     return web.json_response({"reconciled": reconciled, "running": len(running_tasks) - reconciled})
 
 
+# ── Grouped views (project inference + AI clustering) ──
+
+#: ``request.app`` key holding the in-flight clustering job. One pass at a time:
+#: the board is a single shared document, so two concurrent passes would race to
+#: write the same cache and the loser's model call would be paid for and thrown
+#: away.
+_CLUSTER_JOB_KEY = "_kanban_cluster_job"
+
+#: Clustering is a model call, so a fresh pass is only worth making when the
+#: board actually moved. This is the signature the cache is keyed on.
+_CLUSTER_MODEL = "auto"
+
+
+def _infer_project_metadata(request: web.Request) -> dict[str, str]:
+    """The project metadata for a card being created.
+
+    The dashboard's own notion of "the project I am working in" lives on its
+    chat slots, and ``active_project_state`` reports it along with WHY there is
+    no answer when there is none. That distinction is carried onto the card
+    rather than collapsed: ``ambiguous`` (several projects open) needs different
+    words in the UI than ``none`` (no chat names one), and a user who files a
+    card by hand must not have it re-derived out from under them.
+
+    A card created by the app UI carries no session key — the app SDK issues
+    bare ``fetch`` calls with no ``X-Session-Key`` header — so this deliberately
+    asks the *unscoped* question and accepts ``ambiguous`` as a real answer
+    instead of guessing which open project the user meant.
+    """
+    if _active_project_state is None:
+        return _grouping.project_metadata(None, _grouping.PROJECT_SOURCE_NONE)
+    state = _get_state(request)
+    if state is None:
+        return _grouping.project_metadata(None, _grouping.PROJECT_SOURCE_NONE)
+    try:
+        project, status = _active_project_state(state, "")
+    except Exception as exc:  # pragma: no cover - host-shape dependent
+        logger.debug("kanban: project inference failed: %s", exc)
+        return _grouping.project_metadata(None, _grouping.PROJECT_SOURCE_NONE)
+    if status == "set" and project is not None:
+        return _grouping.project_metadata(str(project), _grouping.PROJECT_SOURCE_SESSION)
+    return _grouping.project_metadata(
+        None,
+        _grouping.PROJECT_SOURCE_AMBIGUOUS if status == "ambiguous" else _grouping.PROJECT_SOURCE_NONE,
+    )
+
+
+def _cluster_cache_path(ctx: Any) -> Path:
+    return Path(ctx.data_dir) / "board" / "clusters.json"
+
+
+def _board_signature(tasks: list[TaskRecord]) -> str:
+    """What the cluster cache is keyed on: which cards exist and how they read.
+
+    Titles and descriptions are the only inputs clustering sees, so a status
+    change or a new execution must NOT invalidate the cache — otherwise every
+    agent run would pay for a fresh model call that could only return the same
+    grouping.
+    """
+    parts = sorted(f"{t.id}:{hash((t.title, t.description))}" for t in tasks)
+    return str(hash(tuple(parts)))
+
+
+def _read_cluster_cache(ctx: Any) -> dict[str, Any]:
+    path = _cluster_cache_path(ctx)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        # A corrupt cache is a rebuildable derived artifact, never a reason to
+        # fail the board: the next pass overwrites it.
+        logger.warning("kanban: unreadable cluster cache, ignoring: %s", exc)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    assignment = raw.get("assignment")
+    if not isinstance(assignment, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in assignment.items()
+    ):
+        return {}
+    return {"assignment": assignment, "signature": str(raw.get("signature") or ""), "at": raw.get("at") or 0}
+
+
+def _write_cluster_cache(ctx: Any, assignment: dict[str, str], signature: str) -> None:
+    path = _cluster_cache_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(
+        path,
+        json.dumps({"assignment": assignment, "signature": signature, "at": time.time()}, indent=2, ensure_ascii=False),
+    )
+
+
+def _cluster_label_for(task: TaskRecord, cached: dict[str, str]) -> str:
+    """A card's cluster: its own pinned label first, then the cached pass."""
+    label, _source = _grouping.task_cluster(task)
+    if label and _grouping.is_cluster_pinned(task):
+        return label
+    return cached.get(task.id, "")
+
+
+async def _run_cluster_pass(app: web.Application, ctx: Any, store: KanbanStore) -> None:
+    """One clustering pass: read the board, ask the model, persist the result.
+
+    Failure is silent by design — clustering is an enhancement over a view that
+    already works, so a gateway with no reachable model shows every card as
+    Ungrouped rather than erroring the board.
+    """
+    try:
+        tasks = await asyncio.to_thread(store.load)
+        if not tasks:
+            return
+        state = app.get("state")
+        sessions = getattr(state, "sessions", None)
+        if sessions is None:
+            logger.debug("kanban: no session manager, skipping clustering")
+            return
+        existing = [label for label in (_grouping.task_cluster(t)[0] for t in tasks) if label]
+        prompt, ids = _grouping.build_cluster_prompt(tasks, existing)
+        reply = await run_bg_oneliner(sessions, prompt, model=_CLUSTER_MODEL, sel_source="kanban_cluster")
+        # Group labels are untrusted model output that gets persisted and
+        # rendered verbatim in a header, so they pass the same redaction the
+        # naming path applies before anything reaches the board.
+        assignment = {
+            task_id: _redact_model_text(label)
+            for task_id, label in _grouping.parse_cluster_reply(reply, ids).items()
+        }
+        merged = _grouping.merge_cluster_assignment({k: v for k, v in assignment.items() if v}, tasks)
+        await asyncio.to_thread(_write_cluster_cache, ctx, merged, _board_signature(tasks))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("kanban: clustering pass failed: %s", exc)
+
+
+def _spawn_cluster_pass(app: web.Application, ctx: Any, store: KanbanStore) -> bool:
+    """Start a pass unless one is already running. Returns whether it started.
+
+    Single-flight: the handle is held on ``app`` because the event loop only
+    weakly references a bare ``create_task`` handle, so a pass nobody holds can
+    be collected mid-flight.
+    """
+    existing = app.get(_CLUSTER_JOB_KEY)
+    if existing is not None and not existing.done():
+        return False
+    job = asyncio.create_task(_run_cluster_pass(app, ctx, store))
+    app[_CLUSTER_JOB_KEY] = job
+    return True
+
+
+@_require_enabled
+async def api_kanban_groups(request: web.Request, ctx: Any) -> web.Response:
+    """GET /groups — project and cluster groupings for the board.
+
+    Returns the CACHED clustering immediately and refreshes in the background
+    when the board has moved, so opening the cluster view never waits on a model
+    call. ``clusters_refreshing`` tells the frontend to poll once more.
+    """
+    store = _get_store(ctx)
+    tasks = await asyncio.to_thread(store.load)
+    cache = await asyncio.to_thread(_read_cluster_cache, ctx)
+    cached = cache.get("assignment") or {}
+    signature = _board_signature(tasks)
+    stale = cache.get("signature") != signature
+    refreshing = False
+    if stale and tasks:
+        refreshing = _spawn_cluster_pass(request.app, ctx, store)
+
+    projects = _grouping.group_tasks(tasks, lambda t: _grouping.task_project(t)[0])
+    clusters = _grouping.group_tasks(tasks, lambda t: _cluster_label_for(t, cached))
+    return web.json_response(
+        {
+            "projects": projects,
+            "clusters": clusters,
+            "clusters_refreshing": refreshing,
+            "clusters_stale": stale,
+            "clustered_at": cache.get("at") or 0,
+            "assignments": {
+                task.id: {
+                    "project": _grouping.task_project(task)[0],
+                    "project_source": _grouping.task_project(task)[1],
+                    "cluster": _cluster_label_for(task, cached),
+                    "cluster_pinned": _grouping.is_cluster_pinned(task),
+                }
+                for task in tasks
+            },
+        }
+    )
+
+
+@_require_enabled
+async def api_kanban_clusters_refresh(request: web.Request, ctx: Any) -> web.Response:
+    """POST /clusters/refresh — ask for a fresh clustering pass now."""
+    store = _get_store(ctx)
+    started = _spawn_cluster_pass(request.app, ctx, store)
+    return web.json_response({"started": started}, status=202 if started else 409)
+
+
+@_require_enabled
+async def api_kanban_task_group(request: web.Request, ctx: Any) -> web.Response:
+    """POST /tasks/{id}/group — file one card into a project or cluster by hand.
+
+    A dedicated endpoint rather than PATCH ``metadata``: PATCH replaces the whole
+    metadata dict, so routing an override through it would make the frontend do
+    read-modify-write on a field it does not own, and a concurrent namer or run
+    could lose keys in the gap. This merges exactly the group keys it is given.
+
+    Sending an empty value CLEARS the override and hands the card back to
+    inference — that is the "the AI was right after all" escape hatch.
+    """
+    store = _get_store(ctx)
+    task_id = request.match_info["id"]
+    try:
+        body = await _read_object_body(request)
+        if "project" not in body and "cluster" not in body:
+            raise _BadRequest("Provide a project or cluster label", "group_missing")
+        project = _str_field(body, "project", default="").strip()[: _grouping.MAX_LABEL] if "project" in body else None
+        cluster = _str_field(body, "cluster", default="").strip()[: _grouping.MAX_LABEL] if "cluster" in body else None
+    except _BadRequest as bad:
+        return bad.response()
+
+    def updater(task: TaskRecord) -> TaskRecord:
+        metadata = dict(task.metadata)
+        if project is not None:
+            if project:
+                metadata[_grouping.PROJECT_KEY] = project
+                metadata[_grouping.PROJECT_SOURCE_KEY] = _grouping.PROJECT_SOURCE_MANUAL
+            else:
+                # Clearing drops the manual pin so the card is eligible for
+                # inference again; the directory is kept as provenance.
+                metadata.pop(_grouping.PROJECT_KEY, None)
+                metadata[_grouping.PROJECT_SOURCE_KEY] = _grouping.PROJECT_SOURCE_NONE
+        if cluster is not None:
+            if cluster:
+                metadata[_grouping.CLUSTER_KEY] = cluster
+                metadata[_grouping.CLUSTER_SOURCE_KEY] = _grouping.CLUSTER_SOURCE_MANUAL
+            else:
+                metadata.pop(_grouping.CLUSTER_KEY, None)
+                metadata.pop(_grouping.CLUSTER_SOURCE_KEY, None)
+        return replace(task, metadata=metadata, updated_at=time.time())
+
+    result = await asyncio.to_thread(store.update_task, task_id, updater)
+    if result is None:
+        return web.json_response({"error": "Task not found", "code": "task_not_found"}, status=404)
+    return web.json_response({"task": asdict(result)})
+
+
 # ── Route Registration ──
 
 
@@ -2729,5 +2999,8 @@ def register_routes(ctx: Any) -> list[AppRoute]:
         AppRoute("POST", "/tasks/{id}/feedback", api_kanban_tasks_feedback),
         AppRoute("POST", "/tasks/{id}/goal", api_kanban_tasks_goal),
         AppRoute("POST", "/tasks/{id}/goal/action", api_kanban_tasks_goal_action),
+        AppRoute("POST", "/tasks/{id}/group", api_kanban_task_group),
+        AppRoute("GET", "/groups", api_kanban_groups),
+        AppRoute("POST", "/clusters/refresh", api_kanban_clusters_refresh),
         AppRoute("POST", "/reconcile", api_kanban_tasks_reconcile),
     ]

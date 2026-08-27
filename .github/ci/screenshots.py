@@ -127,9 +127,33 @@ with sync_playwright() as p:
     app_link.click()
     page.wait_for_url("**/apps/kanban", timeout=15000)
 
+    # The board now offers four layouts and remembers the choice in
+    # localStorage, so this journey PINS Board rather than trusting the default:
+    # the lane assertions here, and the "Done" lane check after the run settles,
+    # exist only in the lane layout. Pinning also keeps the evidence stable if
+    # the default view changes again.
+    board_view = page.get_by_role("radio", name="Board", exact=True)
+    expect(board_view).to_be_visible(timeout=15000)
+    board_view.click()
+
     for lane in LANES:
         expect(page.get_by_text(lane, exact=True).first).to_be_visible(timeout=15000)
     page.screenshot(path=str(OUT / "02-kanban-board.png"), full_page=True)
+
+    # The other three layouts are what this app now ships, so the evidence shows
+    # each one before the journey continues. Board is re-selected last, which
+    # both restores the layout the rest of the walk needs and leaves the
+    # persisted choice on Board for the later returns to the app.
+    for view_name, shot in (
+        ("Flat", "02b-view-flat"),
+        ("Clusters", "02c-view-clusters"),
+        ("Projects", "02d-view-projects"),
+    ):
+        page.get_by_role("radio", name=view_name, exact=True).click()
+        page.wait_for_timeout(700)
+        page.screenshot(path=str(OUT / f"{shot}.png"), full_page=True)
+    board_view.click()
+    expect(page.get_by_text(LANES[0], exact=True).first).to_be_visible(timeout=15000)
 
     # Step 2: use the actual New task form, rather than creating the card via
     # the API as the smoke test does.

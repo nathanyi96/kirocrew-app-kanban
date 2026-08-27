@@ -16,8 +16,18 @@ const activityLabel = { display: 'block', fontSize: 11, fontWeight: 650, color: 
 // width is the user's call: a card whose outcome is a wall of markdown wants a
 // wide pane, and picking another card wants a narrow one.
 const MIN_WIDTH = 320
-const DEFAULT_WIDTH = 440
+// 620, up from 440. The pane hosts markdown results, code blocks and a
+// verification list; 440 held ~48 characters, which wrapped a diff into noodles.
+// 620 holds ~72 and still leaves three lanes of a 1440-wide board visible.
+const DEFAULT_WIDTH = 620
 const WIDTH_KEY = 'kanban:drawer-width'
+
+// The board reserves space for the drawer by padding itself, and it reads THIS
+// custom property to do it. Publishing the live width is what fixes the older
+// decoupling bug: the padding was a second hardcoded 440, so every pixel the
+// user dragged past the default covered a board lane — and the lanes are drop
+// targets, so it broke dragging, not just the view.
+const WIDTH_VAR = '--kanban-drawer-w'
 
 // The ceiling is viewport-relative so the board never ends up fully covered on
 // a laptop, and it is recomputed on every clamp rather than captured once —
@@ -74,13 +84,24 @@ export default function TaskDetailDrawer({ task, onClose, onMove, onRun, onDelet
   }, [onClose])
 
   // One writer for the width, so the ref the drag and the resize listener read
-  // can never drift from the state React renders.
+  // can never drift from the state React renders — nor from the custom property
+  // the board pads itself with.
   const applyWidth = (value, persist = false) => {
     const next = clampWidth(value)
     widthRef.current = next
     setWidth(next)
+    try { document.documentElement.style.setProperty(WIDTH_VAR, `${next}px`) } catch { /* padding falls back to the default */ }
     if (persist) writeWidth(next)
   }
+
+  // Publish the opening width, and drop the property when the drawer closes so
+  // the board does not keep reserving space for a pane that is gone.
+  useEffect(() => {
+    try { document.documentElement.style.setProperty(WIDTH_VAR, `${widthRef.current}px`) } catch { /* see above */ }
+    return () => {
+      try { document.documentElement.style.removeProperty(WIDTH_VAR) } catch { /* see above */ }
+    }
+  }, [])
 
   // A viewport the user shrinks after dragging would otherwise leave the drawer
   // wider than the screen, so the stored width is re-clamped against the new one.
