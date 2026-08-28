@@ -165,8 +165,11 @@ with sync_playwright() as p:
     prompt = "Create an E2E journey proof task and report the result."
     prompt_box.fill(prompt)
     # Keep this evidence path deterministic: it proves the Chat route while
-    # the separate engine contract smoke covers selecting Task Runner.
-    page.get_by_role("combobox").select_option("chat")
+    # the separate engine contract smoke covers selecting Task Runner. The
+    # select is addressed BY NAME because the form carries a second combobox
+    # (the card's permission), and a bare get_by_role("combobox") resolves to
+    # both and fails strict mode.
+    page.get_by_role("combobox", name="Engine for this task").select_option("chat")
     with page.expect_response(
         lambda response: response.request.method == "POST"
         and response.url.endswith("/api/apps/kanban/tasks")
@@ -299,10 +302,11 @@ with sync_playwright() as p:
         prompt_box = page.get_by_placeholder("What do you want done?")
         expect(prompt_box).to_be_visible(timeout=15000)
         prompt_box.fill(task_prompt)
-        page.get_by_role("combobox").select_option(engine)
+        engine_select = page.get_by_role("combobox", name="Engine for this task")
+        engine_select.select_option(engine)
         if loop:
             page.get_by_role("switch", name="Continue until verified").click()
-            expect(page.get_by_role("combobox")).to_be_disabled()
+            expect(engine_select).to_be_disabled()
             page.get_by_role("textbox", name="Goal acceptance criteria").fill(
                 "The requested outcome is implemented\n"
                 "Relevant checks pass without regressions\n"

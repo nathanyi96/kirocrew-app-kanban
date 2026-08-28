@@ -1,7 +1,7 @@
 {
   "name": "kanban",
   "displayName": "Kanban",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "An outcome-first agent task board with durable results, verification evidence, artifacts, and bounded goal loops.",
   "author": "nathanyi96",
   "license": "MIT",
@@ -9,6 +9,8 @@
   "highlights": [
     "One field to create a task — the board writes the title and summary for you",
     "Choose Chat, Task Runner, Autopilot, or Auto routing when you create a card",
+    "Answer a permission request from the card itself, without opening the chat",
+    "Set each card's permission — Normal, Reads, or Trust — the same ladder chat uses",
     "Review the latest outcome, verification evidence, artifacts, and attempts without reading the full chat",
     "Use Continue until verified for bounded Task Runner loops with attempt, time, and token limits",
     "Reply to Chat or give the next Task Runner attempt a corrective instruction from the drawer",

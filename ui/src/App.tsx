@@ -2,9 +2,9 @@ import { useCallback, useMemo, useState } from 'react'
 import { jsx as _jsx, jsxs as _jsxs } from 'react/jsx-runtime'
 import { useNavigate } from '@kirocrew/app-sdk'
 import lucide from 'lucide-react'
-import { api, jsonBody } from './api/kanbanApi.ts'
+import { api, hostApi, jsonBody } from './api/kanbanApi.ts'
 import { T, actionPill } from './theme.ts'
-import { COLUMNS } from './lib/task-utils.ts'
+import { COLUMNS, DEFAULT_APPROVAL_MODE, DEFAULT_ENGINE } from './lib/task-utils.ts'
 import { flatSort, readViewMode, writeViewMode } from './lib/view-mode.ts'
 import useTasks from './hooks/useTasks.ts'
 import useGroups from './hooks/useGroups.ts'
@@ -21,13 +21,14 @@ const { AlertCircle, KanbanSquare, Plus, Search, X } = lucide
 
 export default function App() {
   const navigate = useNavigate()
-  const { tasks, loading, refresh } = useTasks()
+  const { tasks, loading, loadError, approvals, refresh } = useTasks()
   const [view, setView] = useState(readViewMode)
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [draftPrompt, setDraftPrompt] = useState('')
-  const [draftEngine, setDraftEngine] = useState('auto')
+  const [draftEngine, setDraftEngine] = useState(DEFAULT_ENGINE)
+  const [draftApprovalMode, setDraftApprovalMode] = useState(DEFAULT_APPROVAL_MODE)
   const [draftGoal, setDraftGoal] = useState(null)
   const [moveMenuTask, setMoveMenuTask] = useState(null)
   const [actionError, setActionError] = useState(null)
@@ -43,9 +44,9 @@ export default function App() {
       onError(err)
     }).finally(() => setRunBusyId(null))
   }, [refresh, onError])
-  const handleCreate = useCallback(({ prompt, engine, goal }) => {
+  const handleCreate = useCallback(({ prompt, engine, approval_mode, goal }) => {
     setShowCreateForm(false)
-    api('/tasks', jsonBody({ prompt, status: 'todo', engine, goal })).then(() => { setDraftPrompt(''); setDraftEngine('auto'); setDraftGoal(null); refresh() }).catch(err => { setDraftPrompt(prompt); setDraftEngine(engine); setDraftGoal(goal || null); setShowCreateForm(true); onError(err) })
+    api('/tasks', jsonBody({ prompt, status: 'todo', engine, approval_mode, goal })).then(() => { setDraftPrompt(''); setDraftEngine(DEFAULT_ENGINE); setDraftApprovalMode(DEFAULT_APPROVAL_MODE); setDraftGoal(null); refresh() }).catch(err => { setDraftPrompt(prompt); setDraftEngine(engine); setDraftApprovalMode(approval_mode || DEFAULT_APPROVAL_MODE); setDraftGoal(goal || null); setShowCreateForm(true); onError(err) })
   }, [refresh, onError])
   const handleDelete = useCallback(id => api(`/tasks/${id}`, { method: 'DELETE' }).then(() => { setSelectedId(null); refresh() }).catch(onError), [refresh, onError])
   const handleOpenEngine = useCallback((task, execution) => {
@@ -73,6 +74,41 @@ export default function App() {
   } })).then(refresh).catch(onError), [refresh, onError])
   const handleGoalAction = useCallback((task, action) => api(`/tasks/${task.id}/goal/action`, jsonBody({ action })).then(refresh).catch(onError), [refresh, onError])
 
+  // Answering a permission request goes straight to the HOST, because the Host
+  // owns the blocked turn and only accepts the answer from the owner's own
+  // dashboard request. `approved` is the exact literal the Host treats as
+  // approval — every other value resolves as a rejection — and `trust` approves
+  // this call AND stops the session asking again.
+  const handleApproval = useCallback((task, action) => {
+    const pending = approvals[task.id]
+    if (!pending?.session_key) { setActionError('That permission request is no longer pending.'); return }
+    setRunBusyId(task.id)
+    hostApi(`/api/chat/slots/${encodeURIComponent(pending.session_key)}/approve`, jsonBody({
+      action,
+      request_id: pending.request_id,
+    })).then(refresh).catch(err => {
+      onError(err instanceof Error ? new Error(`Could not answer the permission request: ${err.message}`) : err)
+    }).finally(() => setRunBusyId(null))
+  }, [approvals, refresh, onError])
+
+  // The card's own permission setting: stored on the board and applied to the
+  // card's session the next time it runs.
+  const handleApprovalMode = useCallback((task, mode) => (
+    api(`/tasks/${task.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approval_mode: mode }) })
+      .then(refresh)
+      .catch(onError)
+  ), [refresh, onError])
+
+  // YOLO is not a card setting — it is the Host's process-wide switch, so it is
+  // handed to the Host's own audited endpoint exactly as the chat control does.
+  const handleHostYolo = useCallback(enabled => (
+    hostApi('/api/chat/mode', jsonBody({ mode: enabled ? 'yolo' : 'normal' }))
+      .then(() => setActionError(enabled
+        ? 'YOLO is now on for EVERY chat in this Kiro Crew, not just this card.'
+        : 'Approvals are back on everywhere.'))
+      .catch(err => onError(err instanceof Error ? new Error(`Host refused the approval-mode change: ${err.message}`) : err))
+  ), [onError])
+
   const needle = search.trim().toLowerCase()
   const filtered = useMemo(() => needle ? tasks.filter(t => t.title.toLowerCase().includes(needle) || t.description.toLowerCase().includes(needle) || t.prompt.toLowerCase().includes(needle) || t.tags.some(tag => tag.toLowerCase().includes(needle))) : tasks, [tasks, needle])
   const selectedTask = tasks.find(t => t.id === selectedId) || null
@@ -94,6 +130,8 @@ export default function App() {
     onOpenEngine: handleOpenEngine,
     onMoveMenu: setMoveMenuTask,
     runBusy: runBusyId === task.id,
+    pendingApproval: approvals[task.id] || null,
+    onApproval: handleApproval,
   }, task.id)
 
   // The API returns groups as id lists; resolving them against the FILTERED set
@@ -130,8 +168,8 @@ export default function App() {
     return _jsx('div', { style: { display: 'flex', gap: 12, height: '100%', minWidth: 'min-content' }, children: COLUMNS.map(column => _jsx(KanbanColumn, { column, tasks: byColumn(column.id), onDropTask: handleMove, children: byColumn(column.id).map(renderCard('board')) }, column.id)) })
   }
 
-  return _jsxs('div', { style: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', paddingRight: selectedTask ? 'min(var(--kanban-drawer-w, 620px), 92vw)' : 0, transition: 'padding-right 180ms ease-out', color: T.text, fontSize: 14 }, children: [
-    _jsx('style', { children: '@keyframes kanban-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } } @keyframes kanban-drawer-in { from { transform: translateX(18px) } to { transform: translateX(0) } } @keyframes kanban-indeterminate { from { transform: translateX(-120%) } to { transform: translateX(330%) } } .kanban-card-actions { max-height: 0; opacity: 0; overflow: hidden; transition: max-height 140ms ease-out, opacity 140ms ease-out } .kanban-card:hover .kanban-card-actions, .kanban-card:focus-within .kanban-card-actions, .kanban-card:focus-visible .kanban-card-actions { max-height: 26px; opacity: 1 } @media (prefers-reduced-motion: reduce) { .kanban-card-actions { transition: none } }' }),
+  return _jsxs('div', { style: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', paddingRight: selectedTask ? 'min(var(--kanban-drawer-w, 620px), 92%)' : 0, transition: 'padding-right 180ms ease-out', color: T.text, fontSize: 14 }, children: [
+    _jsx('style', { children: '@keyframes kanban-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } } @keyframes kanban-drawer-in { from { transform: translateX(18px) } to { transform: translateX(0) } } @keyframes kanban-indeterminate { from { transform: translateX(-120%) } to { transform: translateX(330%) } } .kanban-card-actions { max-height: 0; opacity: 0; overflow: hidden; transition: max-height 140ms ease-out, opacity 140ms ease-out } .kanban-card:hover .kanban-card-actions, .kanban-card:focus-within .kanban-card-actions, .kanban-card:focus-visible .kanban-card-actions { max-height: 26px; opacity: 1 } .kanban-drawer-grip-bar { width: 2px; height: 34px; border-radius: 2px; background: var(--border-strong, #3a3a44); opacity: 0.55; transition: opacity 120ms ease-out, background 120ms ease-out } .kanban-drawer-grip:hover .kanban-drawer-grip-bar, .kanban-drawer-grip:focus-visible .kanban-drawer-grip-bar { opacity: 1; height: 56px; background: var(--accent, #7c3aed) } .kanban-drawer-grip:focus-visible { outline: none } @media (prefers-reduced-motion: reduce) { .kanban-card-actions, .kanban-drawer-grip-bar { transition: none } }' }),
     _jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', padding: '16px 16px 12px' }, children: [
       _jsxs('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8 }, children: [_jsx('h1', { style: { margin: 0, fontSize: 19, fontWeight: 600, color: T.strong }, children: 'Kanban' }), _jsxs('span', { style: { fontSize: 12, color: T.muted }, children: [String(tasks.length), ' tasks'] })] }),
       _jsx(ViewSwitcher, { view, onChange: nextView => { setView(nextView); writeViewMode(nextView) } }),
@@ -139,11 +177,12 @@ export default function App() {
       _jsxs('div', { style: { position: 'relative', display: 'inline-flex', alignItems: 'center' }, children: [_jsx(Search, { size: 14, style: { position: 'absolute', left: 10, color: T.muted, pointerEvents: 'none' } }), _jsx('input', { 'aria-label': 'Search tasks', placeholder: 'Search tasks…', value: search, onChange: e => setSearch(e.target.value), style: { background: T.bg, color: T.text, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px 7px 32px', fontSize: 12, width: 200, outline: 'none' } })] }),
       needle && _jsxs('span', { style: { fontSize: 11, color: T.muted }, children: [String(filtered.length), ' matches'] }),
     ] }),
+    loadError && _jsx('div', { role: 'alert', style: { margin: '0 16px 12px', padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.5)', background: 'rgba(239,68,68,0.08)', fontSize: 12, lineHeight: 1.5, color: T.danger }, children: loadError }),
     actionError && _jsxs('div', { role: 'alert', style: { display: 'flex', alignItems: 'flex-start', gap: 8, margin: '0 16px 12px', padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.5)', background: 'rgba(239,68,68,0.08)', fontSize: 12, color: T.danger }, children: [_jsx('span', { style: { flex: 1 }, children: actionError }), _jsx('button', { type: 'button', 'aria-label': 'Dismiss error', onClick: () => setActionError(null), style: { background: 'transparent', border: 'none', color: T.danger }, children: _jsx(X, { size: 14 }) })] }),
-    taskRunnerPrompt && _jsx('div', { role: 'dialog', 'aria-modal': true, 'aria-label': 'Enable Task Runner', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(0,0,0,0.46)' }, children: _jsxs('div', { style: { width: 'min(460px, 100%)', background: T.card, color: T.text, border: `1px solid ${T.borderStrong}`, borderRadius: 12, padding: 20 }, children: [_jsxs('div', { style: { display: 'flex', gap: 10 }, children: [_jsx(AlertCircle, { size: 18, style: { color: T.warn } }), _jsxs('div', { style: { flex: 1 }, children: [_jsx('h2', { style: { margin: 0, fontSize: 16, color: T.strong }, children: 'Enable Task Runner' }), _jsx('p', { style: { margin: '10px 0 0', fontSize: 13, lineHeight: 1.5 }, children: taskRunnerPrompt.message }), _jsx('p', { style: { margin: '8px 0 0', fontSize: 12, color: T.muted }, children: 'Nothing was started and this task remains ready to run.' })] }), _jsx('button', { type: 'button', 'aria-label': 'Close enable prompt', onClick: () => setTaskRunnerPrompt(null), style: { background: 'transparent', border: 'none', color: T.muted }, children: _jsx(X, { size: 15 }) })] }), _jsxs('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }, children: [_jsx('button', { type: 'button', onClick: () => setTaskRunnerPrompt(null), style: { ...actionPill, background: T.hover, color: T.text }, children: 'Not now' }), _jsx('button', { type: 'button', onClick: () => { setTaskRunnerPrompt(null); navigate(taskRunnerPrompt.action?.path || '/projects') }, style: { ...actionPill, background: T.accent, color: '#fff' }, children: taskRunnerPrompt.action?.label || 'Open Task Runner' })] })] }) }),
+    taskRunnerPrompt && _jsx('div', { role: 'dialog', 'aria-modal': true, 'aria-label': 'Enable Task Runner', style: { position: 'absolute', inset: 0, zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(0,0,0,0.46)' }, children: _jsxs('div', { style: { width: 'min(460px, 100%)', background: T.card, color: T.text, border: `1px solid ${T.borderStrong}`, borderRadius: 12, padding: 20 }, children: [_jsxs('div', { style: { display: 'flex', gap: 10 }, children: [_jsx(AlertCircle, { size: 18, style: { color: T.warn } }), _jsxs('div', { style: { flex: 1 }, children: [_jsx('h2', { style: { margin: 0, fontSize: 16, color: T.strong }, children: 'Enable Task Runner' }), _jsx('p', { style: { margin: '10px 0 0', fontSize: 13, lineHeight: 1.5 }, children: taskRunnerPrompt.message }), _jsx('p', { style: { margin: '8px 0 0', fontSize: 12, color: T.muted }, children: 'Nothing was started and this task remains ready to run.' })] }), _jsx('button', { type: 'button', 'aria-label': 'Close enable prompt', onClick: () => setTaskRunnerPrompt(null), style: { background: 'transparent', border: 'none', color: T.muted }, children: _jsx(X, { size: 15 }) })] }), _jsxs('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }, children: [_jsx('button', { type: 'button', onClick: () => setTaskRunnerPrompt(null), style: { ...actionPill, background: T.hover, color: T.text }, children: 'Not now' }), _jsx('button', { type: 'button', onClick: () => { setTaskRunnerPrompt(null); navigate(taskRunnerPrompt.action?.path || '/projects') }, style: { ...actionPill, background: T.accent, color: '#fff' }, children: taskRunnerPrompt.action?.label || 'Open Task Runner' })] })] }) }),
     _jsx('div', { style: { flex: 1, overflow: 'auto', padding: '0 16px 16px' }, children: loading ? _jsxs('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: T.muted }, children: [_jsx(KanbanSquare, { size: 20 }), _jsx('span', { style: { marginLeft: 8, fontSize: 13 }, children: 'Loading board…' })] }) : boardBody() }),
-    selectedTask && _jsx(TaskDetailDrawer, { task: selectedTask, onClose: () => setSelectedId(null), onMove: handleMove, onRun: handleRun, onDelete: handleDelete, onOpenEngine: handleOpenEngine, onFeedback: handleFeedback, onConfigureGoal: handleConfigureGoal, onGoalAction: handleGoalAction }),
+    selectedTask && _jsx(TaskDetailDrawer, { task: selectedTask, pendingApproval: approvals[selectedTask.id] || null, onClose: () => setSelectedId(null), onMove: handleMove, onRun: handleRun, onDelete: handleDelete, onOpenEngine: handleOpenEngine, onFeedback: handleFeedback, onConfigureGoal: handleConfigureGoal, onGoalAction: handleGoalAction, onApproval: handleApproval, onApprovalMode: handleApprovalMode, onHostYolo: handleHostYolo }),
     moveMenuTask && _jsx(MoveMenu, { task: moveMenuTask, onMove: handleMove, onClose: () => setMoveMenuTask(null) }),
-    showCreateForm && _jsx(CreateTaskForm, { initialPrompt: draftPrompt, initialEngine: draftEngine, initialGoal: draftGoal, onSubmit: handleCreate, onCancel: () => { setDraftPrompt(''); setDraftEngine('auto'); setDraftGoal(null); setShowCreateForm(false) } }),
+    showCreateForm && _jsx(CreateTaskForm, { initialPrompt: draftPrompt, initialEngine: draftEngine, initialApprovalMode: draftApprovalMode, initialGoal: draftGoal, onSubmit: handleCreate, onCancel: draft => { setDraftPrompt(draft?.prompt || ''); setDraftEngine(draft?.engine || DEFAULT_ENGINE); setDraftApprovalMode(draft?.approval_mode || DEFAULT_APPROVAL_MODE); setDraftGoal(draft?.goal || null); setShowCreateForm(false) } }),
   ] })
 }
