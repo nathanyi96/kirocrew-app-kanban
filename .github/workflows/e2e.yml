@@ -55,6 +55,14 @@ jobs:
           kirocrew app install .
           kirocrew config set agent.apps_trusted '["kanban"]'
           kirocrew app enable kanban
+          # A fresh data home is a real first run, so the Host mounts its
+          # "Choose your look" modal over the dashboard (role=dialog, z-120)
+          # and it intercepts the sidebar click this journey starts with. That
+          # modal is Host onboarding, not part of this app's contract, and the
+          # Playwright-side dismissal is a race we keep losing — declaring the
+          # flow already done is the deterministic way to keep it off screen.
+          kirocrew config set dashboard.onboarded true
+          kirocrew config set dashboard.import_onboarded true
 
       # The CLI-readiness probe always verifies an unverified binary INSIDE the
       # strict OS sandbox (by design, not configurable), and Ubuntu 24.04

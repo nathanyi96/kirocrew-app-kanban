@@ -106,19 +106,42 @@ with sync_playwright() as p:
 
     # A fresh home is a real first run: setup/onboarding dialogs mount over the
     # page and intercept pointer events. Dismiss them before interacting.
+    # `dashboard.onboarded` is set in the workflow so the "Choose your look"
+    # modal never mounts; this loop still runs for anything else the Host may
+    # show, and now says WHAT it could not dismiss instead of leaving the next
+    # click to time out for 30s against an invisible blocker.
+    _DISMISS_LABELS = (
+        "Skip all", "Skip", "Not now", "Maybe later", "Done", "Finish",
+        "Get started", "Close", "Dismiss",
+    )
     for _ in range(20):
         page.wait_for_timeout(500)
-        skip_all = page.get_by_role("button", name="Skip all", exact=True)
-        if skip_all.count() > 0 and skip_all.first.is_visible():
-            skip_all.first.click()
-            continue
         dialogs = page.locator('[role="dialog"]')
         if dialogs.count() == 0 or not dialogs.first.is_visible():
             break
+        clicked = False
+        for label in _DISMISS_LABELS:
+            button = page.get_by_role("button", name=label, exact=True)
+            if button.count() > 0 and button.first.is_visible():
+                button.first.click()
+                clicked = True
+                break
+        if clicked:
+            continue
         page.keyboard.press("Escape")
         close = page.locator('[role="dialog"] [aria-label="Close"]')
         if close.count() > 0 and close.first.is_visible():
             close.first.click()
+    blocking = page.locator('[role="dialog"]')
+    if blocking.count() > 0 and blocking.first.is_visible():
+        label = blocking.first.get_attribute("aria-label") or "(unlabelled)"
+        buttons = blocking.first.get_by_role("button").all_text_contents()
+        page.screenshot(path=str(OUT / "00-undismissed-host-dialog.png"), full_page=True)
+        raise AssertionError(
+            f"a Host dialog is still open and will intercept every click: "
+            f"{label!r} with buttons {buttons}. Add its dismissal affordance to "
+            f"_DISMISS_LABELS, or suppress the flow via kirocrew config."
+        )
 
     # Step 1: show how a user enters the installed app from the host dashboard.
     app_link = page.get_by_role("button", name="Kanban", exact=True)
