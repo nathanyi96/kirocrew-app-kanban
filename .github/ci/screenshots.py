@@ -106,19 +106,42 @@ with sync_playwright() as p:
 
     # A fresh home is a real first run: setup/onboarding dialogs mount over the
     # page and intercept pointer events. Dismiss them before interacting.
+    # `dashboard.onboarded` is set in the workflow so the "Choose your look"
+    # modal never mounts; this loop still runs for anything else the Host may
+    # show, and now says WHAT it could not dismiss instead of leaving the next
+    # click to time out for 30s against an invisible blocker.
+    _DISMISS_LABELS = (
+        "Skip all", "Skip", "Not now", "Maybe later", "Done", "Finish",
+        "Get started", "Close", "Dismiss",
+    )
     for _ in range(20):
         page.wait_for_timeout(500)
-        skip_all = page.get_by_role("button", name="Skip all", exact=True)
-        if skip_all.count() > 0 and skip_all.first.is_visible():
-            skip_all.first.click()
-            continue
         dialogs = page.locator('[role="dialog"]')
         if dialogs.count() == 0 or not dialogs.first.is_visible():
             break
+        clicked = False
+        for label in _DISMISS_LABELS:
+            button = page.get_by_role("button", name=label, exact=True)
+            if button.count() > 0 and button.first.is_visible():
+                button.first.click()
+                clicked = True
+                break
+        if clicked:
+            continue
         page.keyboard.press("Escape")
         close = page.locator('[role="dialog"] [aria-label="Close"]')
         if close.count() > 0 and close.first.is_visible():
             close.first.click()
+    blocking = page.locator('[role="dialog"]')
+    if blocking.count() > 0 and blocking.first.is_visible():
+        label = blocking.first.get_attribute("aria-label") or "(unlabelled)"
+        buttons = blocking.first.get_by_role("button").all_text_contents()
+        page.screenshot(path=str(OUT / "00-undismissed-host-dialog.png"), full_page=True)
+        raise AssertionError(
+            f"a Host dialog is still open and will intercept every click: "
+            f"{label!r} with buttons {buttons}. Add its dismissal affordance to "
+            f"_DISMISS_LABELS, or suppress the flow via kirocrew config."
+        )
 
     # Step 1: show how a user enters the installed app from the host dashboard.
     app_link = page.get_by_role("button", name="Kanban", exact=True)
@@ -165,8 +188,11 @@ with sync_playwright() as p:
     prompt = "Create an E2E journey proof task and report the result."
     prompt_box.fill(prompt)
     # Keep this evidence path deterministic: it proves the Chat route while
-    # the separate engine contract smoke covers selecting Task Runner.
-    page.get_by_role("combobox").select_option("chat")
+    # the separate engine contract smoke covers selecting Task Runner. The
+    # select is addressed BY NAME because the form carries a second combobox
+    # (the card's permission), and a bare get_by_role("combobox") resolves to
+    # both and fails strict mode.
+    page.get_by_role("combobox", name="Engine for this task").select_option("chat")
     with page.expect_response(
         lambda response: response.request.method == "POST"
         and response.url.endswith("/api/apps/kanban/tasks")
@@ -299,10 +325,11 @@ with sync_playwright() as p:
         prompt_box = page.get_by_placeholder("What do you want done?")
         expect(prompt_box).to_be_visible(timeout=15000)
         prompt_box.fill(task_prompt)
-        page.get_by_role("combobox").select_option(engine)
+        engine_select = page.get_by_role("combobox", name="Engine for this task")
+        engine_select.select_option(engine)
         if loop:
             page.get_by_role("switch", name="Continue until verified").click()
-            expect(page.get_by_role("combobox")).to_be_disabled()
+            expect(engine_select).to_be_disabled()
             page.get_by_role("textbox", name="Goal acceptance criteria").fill(
                 "The requested outcome is implemented\n"
                 "Relevant checks pass without regressions\n"

@@ -7,7 +7,7 @@ import {
 } from '../lib/task-utils.ts'
 import { relativeTime } from '../lib/formatting.ts'
 
-const { AlertCircle, Flag, Loader2, MessageSquare, MoreHorizontal, Play, RotateCw } = lucide
+const { AlertCircle, Flag, Loader2, MessageSquare, MoreHorizontal, Play, RotateCw, ShieldAlert } = lucide
 
 // Which colour a card's state paints with. The five board lanes map onto the
 // theme's five tones, so a card looks the same colour in every view.
@@ -34,6 +34,13 @@ const STATE_LABEL = { backlog: 'Backlog', todo: 'To do', running: 'Running', don
 
 const bodyColor = tone => (tone === 'error' ? T.danger : T.text)
 
+// The permission band's buttons. Small, but real buttons — the last round's bug
+// was a confirm whose controls rendered as bare text under the host's reset.
+const approvalPill = {
+  padding: '4px 9px', borderRadius: 7, border: 'none',
+  fontSize: 10.5, fontWeight: 600, cursor: 'pointer', lineHeight: 1.2,
+}
+
 /**
  * One board card.
  *
@@ -46,7 +53,7 @@ const bodyColor = tone => (tone === 'error' ? T.danger : T.text)
  * drawn, which is what buys the vertical space the body line now uses. Focus is
  * included on purpose: a hover-only affordance is unreachable by keyboard.
  */
-export default function TaskCard({ task, variant = 'board', onClick, onRun, onOpenEngine, onMoveMenu, runBusy }) {
+export default function TaskCard({ task, variant = 'board', onClick, onRun, onOpenEngine, onMoveMenu, runBusy, pendingApproval = null, onApproval = () => {} }) {
   const latest = task.executions.length ? task.executions[task.executions.length - 1] : null
   const engine = taskEngine(task)
   const running = task.status === 'running'
@@ -141,6 +148,28 @@ export default function TaskCard({ task, variant = 'board', onClick, onRun, onOp
       }),
 
       _jsxs('div', { style: { marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }, children: [
+        // The agent is blocked asking for something. This is the ONE case where a
+        // card interrupts: an app-owned session gets the Host's deny-fast window
+        // (about three minutes) and then the tool is refused, so an answer that
+        // waits for the user to open the drawer usually arrives too late.
+        pendingApproval && _jsxs('div', {
+          onClick: event => event.stopPropagation(),
+          style: {
+            display: 'flex', flexDirection: 'column', gap: 6, padding: '7px 8px',
+            borderRadius: 8, border: '1px solid rgba(234,179,8,0.55)', background: 'rgba(234,179,8,0.12)',
+          },
+          children: [
+            _jsxs('span', { style: { display: 'flex', alignItems: 'flex-start', gap: 5, fontSize: 11, lineHeight: 1.35, color: T.strong }, children: [
+              _jsx(ShieldAlert, { size: 12, style: { flexShrink: 0, marginTop: 1, color: T.warn }, 'aria-hidden': true }),
+              _jsxs('span', { children: ['Needs permission: ', _jsx('strong', { children: pendingApproval.tool })] }),
+            ] }),
+            _jsxs('div', { style: { display: 'flex', gap: 5 }, children: [
+              _jsx('button', { type: 'button', disabled: runBusy, onClick: () => onApproval(task, 'approved'), style: { ...approvalPill, background: T.accent, color: '#fff' }, children: 'Allow' }),
+              _jsx('button', { type: 'button', disabled: runBusy, title: 'Allow, and stop asking for this card', onClick: () => onApproval(task, 'trust'), style: { ...approvalPill, background: T.hover, color: T.text }, children: 'Always' }),
+              _jsx('button', { type: 'button', disabled: runBusy, onClick: () => onApproval(task, 'rejected'), style: { ...approvalPill, background: 'transparent', color: T.danger, border: `1px solid ${T.border}` }, children: 'Deny' }),
+            ] }),
+          ],
+        }),
         // A hairline instead of a sentence. Determinate runs show real progress;
         // an indeterminate one reuses the marquee animation that already shipped
         // in the stylesheet and had no consumer.

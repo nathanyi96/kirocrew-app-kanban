@@ -206,6 +206,14 @@ try:
 except Exception:  # pragma: no cover - host-shape dependent
     _active_project_state = None
 
+# Applying a card's permission writes the same per-session approval policy the
+# Host's own approval control writes, which is keyed on the slot's EFFECTIVE
+# session. Imported defensively for the same reason as above.
+try:
+    from kiro_crew.dashboard.chat_utils import effective_session_key as _host_effective_session_key
+except Exception:  # pragma: no cover - host-shape dependent
+    _host_effective_session_key = None
+
 logger = logging.getLogger("kirocrew.app.kanban")
 
 #: Manifest name — the app.json ``name`` and the ``/api/apps/<name>`` prefix.
@@ -252,6 +260,14 @@ TASK_STATUSES = ("backlog", "todo", "running", "done", "failed")
 # resolved engine so an old card can still be opened at the right destination
 # after the board's default-routing heuristic changes.
 TASK_ENGINES = ("auto", "chat", "task_runner", "autopilot")
+
+#: The approval modes a CARD may carry. These are the Host's own per-session
+#: modes; ``yolo`` is absent on purpose — it is a process-wide switch in the Host
+#: (it silences approvals in every chat), its activation is SEL-audited and can be
+#: refused by the enterprise governance ceiling, and its endpoint is owner-only.
+#: The board therefore never stores or applies it: the UI hands a YOLO request to
+#: the Host's own audited endpoint as the global toggle it actually is.
+CARD_APPROVAL_MODES = ("normal", "trust_reads", "trust")
 EXECUTION_ENGINES = ("chat", "task_runner", "autopilot")
 
 #: The lanes a REQUEST may put a card in. ``running`` is deliberately absent:
@@ -867,6 +883,14 @@ def _task_from_dict(raw: dict[str, Any]) -> TaskRecord:
             # permission to render a card as perpetually refining.
             refining=raw.get("refining") is True,
             engine=engine,
+            # An unknown or absent value reads as `normal`: a board file written
+            # by an older build has no such key, and a stray string must never
+            # be admitted as a broader grant than the user chose.
+            approval_mode=(
+                raw.get("approval_mode")
+                if raw.get("approval_mode") in CARD_APPROVAL_MODES
+                else "normal"
+            ),
             active_engine=active_engine,
             assignee=assignee,
             metadata=metadata,
@@ -1180,14 +1204,44 @@ def _tags_field(body: dict[str, Any], key: str = "tags") -> list[str]:
     return value
 
 
-def _engine_field(body: dict[str, Any], key: str = "engine", *, default: str = "auto") -> str:
-    """Read an engine preference from an API body."""
+def _engine_field(body: dict[str, Any], key: str = "engine", *, default: str = "chat") -> str:
+    """Read an engine preference from an API body.
+
+    The default is ``chat``, matching the board's own create form: an omitted
+    engine must not silently opt the card into ``auto``'s re-routing, which can
+    send a one-line question to Task Runner. ``auto`` remains a value a caller
+    can ASK for.
+    """
     value = body.get(key, default)
     if value is None:
         return default
     if not isinstance(value, str) or value not in TASK_ENGINES:
         allowed = ", ".join(TASK_ENGINES)
         raise _BadRequest(f"{key} must be one of: {allowed}", f"{key}_invalid")
+    return value
+
+
+def _approval_mode_field(body: dict[str, Any], *, default: str = "normal") -> str:
+    """Read a card's approval mode from an API body.
+
+    ``yolo`` is refused with its own code rather than silently downgraded: the
+    caller asked for something this field cannot express (a process-wide switch),
+    and answering 200 with ``normal`` stored would tell them the card is running
+    unattended when it is not. The UI routes that request to the Host's own
+    owner-only, audited endpoint instead.
+    """
+    value = body.get("approval_mode", default)
+    if value is None:
+        return default
+    if value == "yolo":
+        raise _BadRequest(
+            "yolo is a process-wide Host setting, not a card setting; set it from "
+            "the Host approval control",
+            "approval_mode_global",
+        )
+    if not isinstance(value, str) or value not in CARD_APPROVAL_MODES:
+        allowed = ", ".join(CARD_APPROVAL_MODES)
+        raise _BadRequest(f"approval_mode must be one of: {allowed}", "approval_mode_invalid")
     return value
 
 
@@ -1333,7 +1387,14 @@ async def api_kanban_tasks_list(request: web.Request, ctx: Any) -> web.Response:
     """
     store = _get_store(ctx)
     tasks = await asyncio.to_thread(store.load)
-    return web.json_response({"tasks": [asdict(t) for t in tasks], "total": len(tasks)})
+    # Pending approvals ride alongside the records rather than inside them: a
+    # blocked tool is live slot state, not board state, and writing it onto the
+    # card would outlive the turn that is waiting.
+    return web.json_response({
+        "tasks": [asdict(t) for t in tasks],
+        "total": len(tasks),
+        "approvals": _pending_approvals_for(_get_state(request), tasks),
+    })
 
 
 # ── Create Task ──
@@ -1365,6 +1426,7 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         description = _str_field(body, "description")
         tags = _tags_field(body)
         engine = _engine_field(body)
+        approval_mode = _approval_mode_field(body)
         goal = _goal_field(body, objective=prompt or title)
     except _BadRequest as bad:
         return bad.response()
@@ -1397,6 +1459,7 @@ async def api_kanban_tasks_create(request: web.Request, ctx: Any) -> web.Respons
         engine="task_runner" if goal is not None and goal.mode == "loop" else engine,
         goal=goal,
     )
+    task = replace(task, approval_mode=approval_mode)
     # The project is captured HERE and stored, not resolved on read: it is
     # inferred from live chat-slot state that is gone by the time the board is
     # read back, so a lazy lookup would answer for whatever is open later.
@@ -1520,6 +1583,8 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
             _tags_field(body)
         if "engine" in body:
             _engine_field(body)
+        if "approval_mode" in body:
+            _approval_mode_field(body)
         if "assignee" in body:
             _str_field(body, "assignee", default="")
         if "metadata" in body:
@@ -1547,6 +1612,7 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
         tags = body.get("tags", task.tags)
         priority = body.get("priority", task.priority)
         engine = body.get("engine", task.engine)
+        approval_mode = body.get("approval_mode", task.approval_mode)
         assignee = body.get("assignee", task.assignee)
         metadata = body.get("metadata", task.metadata)
 
@@ -1566,6 +1632,9 @@ async def api_kanban_tasks_update(request: web.Request, ctx: Any) -> web.Respons
             # returns afterwards must not overwrite what the user just typed.
             refining=False if "title" in body or "description" in body else task.refining,
             engine=engine if engine in TASK_ENGINES else task.engine,
+            approval_mode=(
+                approval_mode if approval_mode in CARD_APPROVAL_MODES else task.approval_mode
+            ),
             active_engine=task.active_engine,
             assignee=assignee if isinstance(assignee, str) else task.assignee,
             metadata=metadata if isinstance(metadata, dict) else task.metadata,
@@ -2276,6 +2345,11 @@ async def _create_kanban_session(
     if getattr(slot, "mode", "") != mode:
         slot.mode = mode
     slot.title = task.title[:80] or "Kanban task"
+    # The card's permission setting has to land BEFORE the prompt is dispatched.
+    # An app-owned slot gets the Host's deny-fast approval window (180s, vs a
+    # human's 7200s), so a turn that hits an untrusted tool stalls and is then
+    # denied — applying trust after dispatch would race that window.
+    _apply_approval_mode(state, slot, task.approval_mode)
 
     # Refuse rather than queue behind a turn that is already running. The
     # baselines below are snapshotted for the turn THIS call starts, so a queued
@@ -2742,6 +2816,100 @@ _CLUSTER_JOB_KEY = "_kanban_cluster_job"
 #: Clustering is a model call, so a fresh pass is only worth making when the
 #: board actually moved. This is the signature the cache is keyed on.
 _CLUSTER_MODEL = "auto"
+
+
+def _effective_session_key(slot: Any) -> str:
+    """The session a slot's approval policy is keyed on.
+
+    The Host distinguishes a slot's own key from the session it actually runs
+    under (a rehydrated or channel-linked slot resolves to a different one), and
+    the approval policy is stored per SESSION. Its helper is imported when the
+    host exposes it and falls back to the slot key otherwise, which is correct for
+    the board's own slots — one slot per card, created by this app.
+    """
+    if _host_effective_session_key is not None:
+        try:
+            return str(_host_effective_session_key(slot))
+        except Exception as exc:  # pragma: no cover - host-shape dependent
+            logger.debug("kanban: effective_session_key failed: %s", exc)
+    return str(getattr(slot, "key", "") or "")
+
+
+def _apply_approval_mode(state: Any, slot: Any, mode: str) -> None:
+    """Set a card's permission on its live Host slot.
+
+    This mirrors what the Host's own approval control writes for the same mode
+    (``chat_handlers.api_chat_mode``): the per-slot ``_trust`` / ``_trust_reads``
+    flags the turn loop reads, and the per-session ``approval_policy`` that makes
+    the grant survive a restart. It is deliberately limited to the three
+    card-scoped modes — ``yolo`` is never activated from here (see
+    ``CARD_APPROVAL_MODES``).
+
+    The write is best-effort: on a host whose internals moved, a card must fall
+    back to ASKING (the safe direction) rather than failing the run, so every
+    failure is logged and swallowed.
+    """
+    if mode not in CARD_APPROVAL_MODES:
+        return
+    try:
+        slot._trust = mode == "trust"
+        slot._trust_reads = mode == "trust_reads"
+        sessions = getattr(state, "sessions", None)
+        setter = getattr(sessions, "set_approval_policy", None)
+        if callable(setter):
+            key = _effective_session_key(slot)
+            if key:
+                setter(key, "auto" if mode == "trust" else "")
+    except Exception as exc:  # pragma: no cover - host-shape dependent
+        logger.warning(
+            "kanban: could not apply approval mode %r to %s: %s",
+            mode, getattr(slot, "key", "?"), exc,
+        )
+
+
+def _pending_approval(state: Any, session_key: str) -> dict[str, Any] | None:
+    """What the Host is currently asking permission for on one session.
+
+    Read from the live slot rather than stored on the card: an approval exists
+    only while a turn is blocked on it, and persisting it would leave a card
+    claiming to need permission for a tool nobody is waiting on. ``to_dict`` is
+    the Host's own serializer for exactly this pair of fields, so the board reads
+    the same view the chat UI does instead of re-deriving it.
+    """
+    if not session_key or state is None:
+        return None
+    slot = (getattr(state, "_slots", {}) or {}).get(session_key)
+    if slot is None:
+        return None
+    try:
+        futures = getattr(slot, "_approval_futures", {}) or {}
+        if not any(not future.done() for future in futures.values()):
+            return None
+        snapshot = slot.to_dict()
+    except Exception as exc:  # pragma: no cover - host-shape dependent
+        logger.debug("kanban: pending approval read failed for %s: %s", session_key, exc)
+        return None
+    info = snapshot.get("pending_approval_info") or {}
+    return {
+        "session_key": session_key,
+        "tool": str(info.get("tool") or "a tool"),
+        "tool_kind": str(info.get("tool_kind") or ""),
+        "tool_input": str(info.get("tool_input") or "")[:400],
+        "request_id": str(info.get("request_id") or ""),
+    }
+
+
+def _pending_approvals_for(state: Any, tasks: list[TaskRecord]) -> dict[str, dict[str, Any]]:
+    """Pending approvals keyed by task id, for the cards that have one."""
+    pending: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        if task.status != "running":
+            continue
+        latest = task.executions[-1] if task.executions else None
+        info = _pending_approval(state, getattr(latest, "session_key", "") or "")
+        if info:
+            pending[task.id] = info
+    return pending
 
 
 def _infer_project_metadata(request: web.Request) -> dict[str, str]:

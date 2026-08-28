@@ -11,11 +11,45 @@ export const DROP_TARGETS = ['backlog', 'todo', 'done', 'failed']
 export const RESULT_LABELS = { succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled' }
 
 export const ENGINE_OPTIONS = [
-  { id: 'auto', label: 'Auto', help: 'Chat for simple prompts; Task Runner for multi-step work' },
   { id: 'chat', label: 'Chat', help: 'One live Chat session' },
   { id: 'task_runner', label: 'Task Runner', help: 'Multi-step execution with progress' },
   { id: 'autopilot', label: 'Autopilot', help: 'Plan first, then approve in a Chat session' },
+  { id: 'auto', label: 'Auto', help: 'Chat for simple prompts; Task Runner for multi-step work' },
 ]
+
+// The engine a new card gets when the user does not pick one. Chat is the
+// default because it is the predictable answer — the card runs in one visible
+// session the user can watch and reply in. `auto` stays available but is opt-in:
+// it silently re-routes a prompt to Task Runner, which is a surprise when the
+// user only wanted to ask something. Every default engine in the UI reads THIS
+// constant, so the choice lives in one place.
+export const DEFAULT_ENGINE = 'chat'
+
+// The card-level slice of the Host's approval ladder. The names and the labels
+// are the Host's own (`normal` / `trust_reads` / `trust`, shown in chat as
+// Normal / Reads / Trust), so a card says the same thing the chat picker says
+// about the same session.
+//
+// `yolo` is deliberately NOT a card setting: it is a PROCESS-WIDE switch in the
+// Host (it turns off approvals in every chat, not this card), it is SEL-audited
+// on activation, and it can be refused by the enterprise governance ceiling.
+// Offering it per card would be a lie about its scope, so the board exposes it
+// only as what it is — a global toggle — and hands it to the Host's own audited
+// endpoint rather than setting it here.
+export const APPROVAL_MODES = [
+  { id: 'normal', label: 'Normal', help: 'Asks before running anything' },
+  { id: 'trust_reads', label: 'Reads', help: 'Looks things up on its own, asks before changes' },
+  { id: 'trust', label: 'Trust', help: 'Runs this card without asking' },
+]
+
+export const APPROVAL_MODE_LABELS = Object.fromEntries(APPROVAL_MODES.map(mode => [mode.id, mode.label]))
+
+export const DEFAULT_APPROVAL_MODE = 'normal'
+
+/** A card's approval mode, tolerant of a record written before the field existed. */
+export const taskApprovalMode = task => (
+  APPROVAL_MODE_LABELS[task?.approval_mode] ? task.approval_mode : DEFAULT_APPROVAL_MODE
+)
 
 export const ENGINE_LABELS = Object.fromEntries(ENGINE_OPTIONS.map(engine => [engine.id, engine.label]))
 

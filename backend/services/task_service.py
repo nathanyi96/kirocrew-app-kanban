@@ -72,14 +72,14 @@ def _activity(task: TaskRecord, kind: str, summary: str, execution_id: str | Non
     ][-200:]
 
 
-def create_task(title: str, description: str = "", prompt: str = "", status: str = "todo", tags: list[str] | None = None, priority: str = "medium", refining: bool = False, engine: str = "auto", goal: object | None = None) -> TaskRecord:
+def create_task(title: str, description: str = "", prompt: str = "", status: str = "todo", tags: list[str] | None = None, priority: str = "medium", refining: bool = False, engine: str = "chat", goal: object | None = None) -> TaskRecord:
     now = time.time()
     return TaskRecord(
         id=str(uuid.uuid4()), title=title, description=description, prompt=prompt,
         status=status if status in TASK_STATUSES else "todo", created_at=now,
         updated_at=now, tags=tags or [],
         priority=priority if priority in ("low", "medium", "high") else "medium",
-        refining=refining, engine=engine if engine in TASK_ENGINES else "auto",
+        refining=refining, engine=engine if engine in TASK_ENGINES else "chat",
         goal=goal,
         activity=[ActivityRecord(str(uuid.uuid4()), now, "created", "Task created")]
         if ActivityRecord is not None else [],

@@ -132,7 +132,16 @@ class TaskRecord:
     tags: list[str] = field(default_factory=list)
     priority: str = "medium"
     refining: bool = False
-    engine: str = "auto"
+    #: The engine a card runs on. ``chat`` by default — an unspecified engine
+    #: must not opt the card into ``auto``'s re-routing, which can hand a simple
+    #: question to Task Runner.
+    engine: str = "chat"
+    #: How much this card's agent session may do without asking. Mirrors the
+    #: Host's own per-session ladder (``normal`` / ``trust_reads`` / ``trust``);
+    #: ``yolo`` is process-wide in the Host and is deliberately NOT storable
+    #: here, because a per-card record of a global switch would misstate its
+    #: blast radius.
+    approval_mode: str = "normal"
     active_engine: str | None = None
     assignee: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)

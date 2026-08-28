@@ -115,6 +115,46 @@ s, body = call("POST", "/api/apps/kanban/tasks", {"prompt": "CI smoke task"})
 tid = body.get("id", "") if isinstance(body, dict) else ""
 check("create -> 201", s == 201, f"status={s}")
 check("created in todo", body.get("status") == "todo" if isinstance(body, dict) else False, f"id={tid[:8]}")
+check(
+    "new card asks before acting",
+    body.get("approval_mode") == "normal" if isinstance(body, dict) else False,
+    str(body)[:120],
+)
+
+s, body = call(
+    "POST",
+    "/api/apps/kanban/tasks",
+    {"prompt": "Trusted card", "approval_mode": "trust"},
+)
+permission_tid = body.get("id", "") if isinstance(body, dict) else ""
+check("create with approval_mode -> 201", s == 201, f"status={s}")
+check(
+    "approval mode persists",
+    body.get("approval_mode") == "trust" if isinstance(body, dict) else False,
+    str(body)[:120],
+)
+
+# YOLO is a Host-wide switch, so the board must refuse to record it as a
+# per-card grant instead of silently storing something weaker.
+s, body = call(
+    "POST",
+    "/api/apps/kanban/tasks",
+    {"prompt": "Should be refused", "approval_mode": "yolo"},
+)
+check("card-scoped yolo -> 400", s == 400, f"status={s}")
+check(
+    "yolo refusal is machine-readable",
+    body.get("code") == "approval_mode_global" if isinstance(body, dict) else False,
+    str(body)[:160],
+)
+
+s, body = call("PATCH", f"/api/apps/kanban/tasks/{permission_tid}", {"approval_mode": "trust_reads"})
+check("patch approval mode -> 200", s == 200, f"status={s}")
+check(
+    "patched approval mode persists",
+    body.get("approval_mode") == "trust_reads" if isinstance(body, dict) else False,
+    str(body)[:120],
+)
 
 s, body = call("GET", "/api/apps/kanban/tasks")
 ids = [t.get("id") for t in body.get("tasks", [])] if isinstance(body, dict) else []
@@ -140,6 +180,8 @@ s, _ = call("DELETE", f"/api/apps/kanban/tasks/{engine_tid}")
 check("delete engine task -> 200", s == 200, f"status={s}")
 s, _ = call("DELETE", f"/api/apps/kanban/tasks/{goal_tid}")
 check("delete goal task -> 200", s == 200, f"status={s}")
+s, _ = call("DELETE", f"/api/apps/kanban/tasks/{permission_tid}")
+check("delete permission task -> 200", s == 200, f"status={s}")
 
 s, body = call("GET", "/api/apps/kanban/tasks")
 ids = [t.get("id") for t in body.get("tasks", [])] if isinstance(body, dict) else []
