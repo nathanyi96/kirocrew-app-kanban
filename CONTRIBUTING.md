@@ -9,6 +9,14 @@ using `git push --force-with-lease` to update it.
 
 ## Pull request guidance
 
+The UI bundle is a shipped artifact. After changing UI source, run `npm ci`
+and `npm run build` in `ui/`, then commit `ui/dist/index.mjs` with the source.
+CI rebuilds and rejects a missing or stale committed bundle. Registry installs
+do not run the build script in the nested `ui/package.json`.
+
+Keep store artwork under `ui/store/` and its paths in `app.json`. Store
+screenshots must show the actual app; review evidence stays under `docs/e2e/`.
+
 Every pull request that changes the app must be backed by a green `E2E / e2e`
 run, and the review evidence must come from that exact run. The Playwright
 journey is part of the review surface: it should show the user path, not only a

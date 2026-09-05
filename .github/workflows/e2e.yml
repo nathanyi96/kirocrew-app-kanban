@@ -49,12 +49,15 @@ jobs:
           npm ci
           npm run build
           node --check dist/index.mjs
+          git ls-files --error-unmatch dist/index.mjs
+          git diff --exit-code -- dist/
 
       - name: Install this app into KiroCrew (the end-user path)
         run: |
           kirocrew app install .
           kirocrew config set agent.apps_trusted '["kanban"]'
           kirocrew app enable kanban
+          kirocrew config set dashboard.onboarded true
 
       # The CLI-readiness probe always verifies an unverified binary INSIDE the
       # strict OS sandbox (by design, not configurable), and Ubuntu 24.04

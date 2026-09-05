@@ -1,11 +1,25 @@
 {
   "name": "kanban",
   "displayName": "Kanban",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "An outcome-first agent task board with durable results, verification evidence, artifacts, and bounded goal loops.",
   "author": "nathanyi96",
   "license": "MIT",
+  "minKiroCrewVersion": "0.3.0",
+  "iconPath": "ui/store/icon.svg",
+  "screenshots": ["ui/store/board.png"],
+  "heroImage": "ui/store/hero.svg",
+  "heroImageDetail": "ui/store/banner.svg",
   "tags": ["productivity", "tasks", "kanban", "automation", "agents"],
+  "useCases": [
+    "Keep agent work visible across planning, execution, review, and completion",
+    "Run a focused Chat request or a multi-step Task Runner job from one board",
+    "Review results and verification evidence without reopening the full session"
+  ],
+  "configuration": [
+    "Install the app, then grant only Kanban in agent.apps_trusted",
+    "Restart KiroCrew after enabling the app so the backend hook is loaded"
+  ],
   "highlights": [
     "One field to create a task — the board writes the title and summary for you",
     "Choose Chat, Task Runner, Autopilot, or Auto routing when you create a card",
