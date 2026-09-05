@@ -1,7 +1,7 @@
 # Install artifacts the gateway writes into an installed copy of this app.
 # Committing them causes stale-version display and path bugs on other machines.
 /build
-/ui/dist
+# ui/dist is shipped: registry installs do not build the nested ui/package.json.
 /ui/node_modules
 /release-info
 .app_secret

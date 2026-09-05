@@ -65,6 +65,9 @@ kirocrew restart
 `app.json`) — clone first, then install the checkout. Installing straight from
 a git URL is the App Store's job, not the CLI's.
 
+The checkout includes the built `ui/dist/index.mjs` and store artwork. Node.js
+and npm are only needed when developing the UI; installation needs no UI build.
+
 Three things about that sequence are easy to get wrong:
 
 - **The trust grant is required.** This app ships a Python backend, and
@@ -90,32 +93,26 @@ disable→enable cycle also works. UI-only changes reload without either.
 
 ## Publishing this to the KiroCrew App Store
 
-1. **Push this directory as its own git repository** (any git host).
-   Include `app.json`, `ui/`, `backend/`, `README.md`. The `.gitignore` already
-   excludes the install artifacts (`data/`, `.app_secret`, `installed.json`, …) —
-   committing those causes stale-version and path bugs for everyone else.
+1. **Prepare a release commit.** Bump `version` in `app.json`, run `npm ci &&
+   npm run build` in `ui/`, and commit the bundle along with the source and
+   `ui/store/` artwork. Verify a fresh checkout installs and enables without
+   building anything. Keep the backend trust prerequisite documented above.
 
-2. **Submit it to the official catalog** — the App Store is published from the
-   separate [kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)
-   repo (served at `apps.crew.kiro.dev/official-registry.json`). Follow its
-   `docs/distribution.md` to add an entry pointing at this repo:
+2. **Open an [App Store listing request](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml).**
+   Supply this public repository, the exact release commit, the Kanban display
+   name, description, tags, and author credit. Complete the
+   [publishing review checklist](https://github.com/kirodotdev/KiroCrew/blob/main/docs/app-kit/publishing-guide.md#14-review-checklist).
+   The official catalog is maintainer-curated; its authoring repository is
+   private, so external authors request a listing through this issue template.
+   A maintainer publishes the entry and the pipeline pins the source commit.
 
-   ```json
-   {
-     "name": "kanban",
-     "gitUrl": "https://github.com/nathanyi96/kirocrew-app-kanban",
-     "branch": "main",
-     "resources": [],
-     "lifecycle": "stable"
-   }
-   ```
+3. **Request a catalog refresh for each release.** After pushing a new version,
+   supply the new commit to the maintainer. Official-store installs use the
+   published commit and version, so a push alone does not ship an update.
 
-   Display metadata — description, tags, highlights, author — is read from the
-   `app.json` in *this* repo and cached for 24h, so it does not go in the
-   registry entry.
-
-3. **Ship updates by bumping `version` in `app.json`** and pushing. The App Store
-   compares semver and offers the update.
+The KiroCrew repository's `app-registry.json` is an offline fallback. Adding a
+seed row does not list Kanban in the online store or fix the online migration
+page. Listing takes effect when the official catalog is published.
 
 ## How it is put together
 
@@ -137,7 +134,7 @@ ui/
   src/               multi-file React/ESM source
   dist/index.mjs    Vite output loaded by KiroCrew
   package.json      UI build scripts
-  vite.config.mjs   host-externalized ESM bundle config
+  vite.config.ts    host-externalized ESM bundle config
   icon.svg          sidebar icon
 ```
 
