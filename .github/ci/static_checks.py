@@ -35,7 +35,7 @@ _EVIDENCE_SUFFIXES = {
     ".mov",
     ".webm",
 }
-_ALLOWED_MEDIA_DIRS = ("ui/", "docs/e2e/")
+_ALLOWED_MEDIA_DIRS = ("ui/",)
 _ART_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 
 
