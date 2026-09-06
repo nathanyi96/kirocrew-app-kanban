@@ -9,8 +9,8 @@ app-crons.json
 installed.json
 data/
 
-# Temporary review evidence is committed under docs/e2e/<pr-number> until a
-# durable PR attachment workflow is adopted.
+# Review evidence is uploaded to PR descriptions or retained as CI artifacts.
+/docs/e2e/
 /e2e-shots/
 
 # Python

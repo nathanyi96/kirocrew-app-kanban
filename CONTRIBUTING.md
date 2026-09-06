@@ -15,54 +15,47 @@ CI rebuilds and rejects a missing or stale committed bundle. Registry installs
 do not run the build script in the nested `ui/package.json`.
 
 Keep store artwork under `ui/store/` and its paths in `app.json`. Store
-screenshots must show the actual app; review evidence stays under `docs/e2e/`.
+screenshots must show the actual app. Review evidence belongs in the pull
+request or its CI artifact, not in the installed app repository.
 
 Every pull request that changes the app must be backed by a green `E2E / e2e`
 run, and the review evidence must come from that exact run. The Playwright
 journey is part of the review surface: it should show the user path, not only a
 unit or API check.
 
-### Evidence is committed under `docs/e2e` for now
+### Evidence lives in the PR or CI artifact
 
 The `E2E / e2e` job uploads every frame it captures as the `e2e-evidence`
-artifact. For now, the passing GIF and PNG frames are also copied into
-`docs/e2e/<pr-number>/` so the pull request can display them through raw GitHub
-URLs. This is a temporary compromise until a durable PR attachment/evidence
-publisher is adopted.
+artifact. Link that exact successful run and artifact in the PR description.
+For a small inline walkthrough, upload selected frames or a GIF directly to
+the PR description with GitHub's attachment flow. GitHub CLI 2.99 or newer can
+do this without adding files to the repository:
 
-Do not place screenshots, GIFs, or videos anywhere else in the repository. The
-static check allows media only under `ui/` (shipped product assets) or
-`docs/e2e/` (review evidence). Keep the evidence directory scoped to the PR
-number and use frames from the exact successful E2E run.
+```bash
+gh pr edit <number> --attach ./path/to/journey.gif
+```
 
-This remains temporary because:
-
-1. Committed evidence increases clone and install size. This repository is an
-   installable KiroCrew app, and `kirocrew app install` copies the whole app
-   directory into `~/.kiro/crew/apps/kanban/`.
-2. Evidence accumulates in git history even after old files are deleted.
-3. Raw links to a PR branch can break after that branch is deleted.
+Use `--body-file` with local Markdown image references when the attachment must
+appear at a specific location. GitHub rewrites those references to its
+user-attachment URLs. Do not place screenshots, GIFs, or videos under `docs/`
+or any other repository path; `ui/store/` is reserved for shipped product
+artwork referenced by `app.json`.
 
 ### Before requesting review
 
 1. Wait for the `E2E / e2e` workflow to finish successfully.
-2. Copy the exact successful run's PNG frames into `docs/e2e/<pr-number>/` and
-   generate the review GIF there.
-3. Embed the GIF/PNG gallery using raw URLs from the PR branch, and link that
-   exact successful run in the description.
-4. Describe the journey the run exercised, naming each path it covered — for an
-   engine-routing change, that means Chat, Task Runner, and Autopilot.
+2. Link the exact successful workflow run and its `e2e-evidence` artifact.
+3. Attach only the frames or GIF needed to explain the changed user path.
+4. Describe the journey the run exercised, naming each path it covered — for
+   an engine-routing change, that means Chat, Task Runner, and Autopilot.
 5. Call out any known limitation or path that is not covered.
 
 Required PR description checklist:
 
 - [ ] The required `E2E / e2e` check is green.
-- [ ] The successful workflow run is linked, so its `e2e-evidence` artifact is
-      one click away.
-- [ ] The description names the user paths the journey covered, end to end.
-- [ ] GIF and PNG frames from that exact run are under
-      `docs/e2e/<pr-number>/`.
-- [ ] The GIF and PNG gallery is embedded in the description.
+- [ ] The successful workflow run and `e2e-evidence` artifact are linked.
+- [ ] The description names the user paths covered end to end.
+- [ ] Any inline image/GIF attachment comes from the exact successful run.
 - [ ] Any known limitation or failed path is called out explicitly.
 
 Do not describe evidence as passing unless it comes from a successful E2E run.
