@@ -8,5 +8,6 @@
 The cards are test data; execution responses come from KiroCrew's fake ACP
 backend. It shows the actual UI, not production agent results.
 
-These are shipped product assets referenced by `app.json`. CI review evidence
-is kept separately under `docs/e2e/<pr-number>/`.
+These are shipped product assets referenced by `app.json`. CI review evidence is
+linked from the PR and its `e2e-evidence` artifact; it is not shipped in the app
+repository.
