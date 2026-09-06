@@ -72,10 +72,13 @@ Three things about that sequence are easy to get wrong:
 
 - **The trust grant is required.** This app ships a Python backend, and
   third-party app code runs in-process with full gateway privileges, so KiroCrew
-  refuses to load it until you say so. Prefer the narrow grant above
-  (`agent.apps_trusted`, this app only) over
-  `agent.apps_allow_third_party=true`, which opens the door for every
-  third-party app.
+  refuses to load it until you say so. The execution gate accepts either the
+  narrow grant above (`agent.apps_trusted`, this app only) or the broader JSON
+  boolean `agent.apps_allow_third_party=true`. Prefer the narrow grant; the
+  broader setting admits executable code from every third-party app.
+- **A repository-bound grant may need refreshing.** If KiroCrew reports
+  `app_execution_denied` after moving the checkout or switching source URLs,
+  remove and re-grant Kanban so the trust record matches this repository.
 - **Grant trust *after* installing, not before.** `app uninstall` revokes an
   app's trust grant, so a trust → uninstall → reinstall sequence leaves you
   untrusted again and the enable fails.
@@ -105,6 +108,8 @@ disable→enable cycle also works. UI-only changes reload without either.
    The official catalog is maintainer-curated; its authoring repository is
    private, so external authors request a listing through this issue template.
    A maintainer publishes the entry and the pipeline pins the source commit.
+   Kanban's current request is [KiroCrew issue #8731](https://github.com/kirodotdev/KiroCrew/issues/8731);
+   it remains pending until a maintainer publishes the catalog entry.
 
 3. **Request a catalog refresh for each release.** After pushing a new version,
    supply the new commit to the maintainer. Official-store installs use the
