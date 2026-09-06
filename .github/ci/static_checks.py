@@ -2,9 +2,9 @@
 and byte-compile the backend. Runs against the installed kirocrew wheel, so a
 schema change in a new KiroCrew release fails here rather than at install time.
 
-Also enforces that review media is isolated under ``docs/e2e/``: this
-repository is an installable app, so product assets and temporary review
-evidence must remain distinguishable.
+Also enforces that review media is kept out of the installable app: shipped
+product assets belong under ``ui/`` and temporary review evidence belongs in
+the pull request or CI artifact.
 """
 
 import json
@@ -20,8 +20,8 @@ from kiro_crew.apps.manifest import AppManifest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Raster and video formats only. ``ui/`` contains shipped product assets and
-# ``docs/e2e/`` contains temporary review evidence.
+# Raster and video formats only. ``ui/`` contains shipped product assets;
+# review evidence is never committed to the app repository.
 _EVIDENCE_SUFFIXES = {
     ".png",
     ".jpg",
@@ -162,7 +162,7 @@ for backend_file in sorted((ROOT / "backend").rglob("*.py")):
 
 evidence = check_no_unscoped_media()
 if evidence:
-    print("  ERROR: media must be under ui/ or docs/e2e/.")
+    print("  ERROR: media must be shipped under ui/; review evidence belongs in the PR or CI artifact.")
     for path in evidence:
         print(f"    {path}")
     sys.exit(1)

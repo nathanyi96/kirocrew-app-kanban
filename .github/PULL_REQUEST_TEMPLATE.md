@@ -10,16 +10,15 @@
 
 ## E2E journey
 
-<!-- Name the user paths the Playwright journey covered, end to end. For now,
-     copy the exact successful run's GIF and PNG frames under
-     docs/e2e/<pr-number>/ and embed their raw branch URLs. -->
+<!-- Name the user paths the Playwright journey covered, end to end. Link the
+     exact successful run and its e2e-evidence artifact. Attach only the
+     selected GIF/PNG frames needed for review directly to this description. -->
 
 - [ ] Paths covered are named above (engine-routing changes must cover Chat,
       Task Runner, and Autopilot).
 - [ ] The `e2e-evidence` artifact link is in this description.
-- [ ] GIF and PNG frames from that exact run are under
-      `docs/e2e/<pr-number>/`.
-- [ ] The GIF and PNG gallery is embedded in this description.
+- [ ] Any inline GIF/PNG attachment comes from that exact successful run.
+- [ ] The selected GIF/PNG gallery is embedded in this description when useful.
 
 ## Notes
 
